@@ -355,10 +355,11 @@ func (v *ComponentCustomValidator) validateComponentSpec(component *kagentiopera
 	deployerErrors := v.validateDeployerSpec(&component.Spec.Deployer)
 	errors = append(errors, deployerErrors...)
 
-	// Validate deployer - only one deployment method should be specified
-	deployerErrors = v.validateKubernetesSpec(&component.Spec.Deployer)
-	errors = append(errors, deployerErrors...)
-
+	// If this is a kubernetes deployment, ensure that it only specifies one kubernetes deployment method.
+	if component.Spec.Deployer.Kubernetes != nil {
+		deployerErrors = v.validateKubernetesSpec(&component.Spec.Deployer)
+		errors = append(errors, deployerErrors...)
+	}
 	return errors
 }
 
@@ -385,9 +386,14 @@ func (v *ComponentCustomValidator) validateDeployerSpec(deployer *kagentioperato
 	return errors
 }
 
-// validateDeployerSpec validates the DeployerSpec for mutually exclusive deployment methods
+// validateDeployerSpec validates the kubernetes DeployerSpec for mutually exclusive deployment methods
 func (v *ComponentCustomValidator) validateKubernetesSpec(deployer *kagentioperatordevv1alpha1.DeployerSpec) []string {
 	var errors []string
+
+	// If Kubernetes deployer is not specified, skip validation
+	if deployer.Kubernetes == nil {
+		return errors
+	}
 
 	kubeDeployCount := 0
 	if deployer.Kubernetes.ImageSpec != nil {

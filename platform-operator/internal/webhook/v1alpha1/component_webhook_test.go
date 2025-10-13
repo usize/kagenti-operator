@@ -82,6 +82,26 @@ var _ = Describe("Component Webhook", func() {
 		//     obj.SomeRequiredField = "updated_value"
 		//     Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
 		// })
+
+		It("Should not panic when validating Component with agent.build but no deployer.kubernetes", func() {
+			By("creating a Component with only agent.build configuration")
+			obj.Spec.Agent = &kagentioperatordevv1alpha1.AgentComponent{
+				Build: &kagentioperatordevv1alpha1.BuildSpec{
+					SourceRepository: "https://github.com/example/repo",
+					SourceRevision:   "main",
+					SourceSubfolder:  "agent",
+				},
+			}
+
+			By("ensuring deployer.kubernetes is nil")
+			obj.Spec.Deployer.Kubernetes = nil
+
+			By("calling validateComponentSpec should not panic")
+			errors := validator.validateComponentSpec(obj)
+
+			By("checking that validation runs without crashing")
+			Expect(errors).NotTo(BeNil())
+		})
 	})
 
 })
