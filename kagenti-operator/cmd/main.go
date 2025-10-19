@@ -226,6 +226,20 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentBuild")
 		os.Exit(1)
 	}
+	if err = (&controller.AgentCardReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
+		os.Exit(1)
+	}
+	if err = (&controller.AgentCardSyncReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentCardSync")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

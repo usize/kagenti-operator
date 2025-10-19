@@ -39,6 +39,7 @@ rules:
   - agent.kagenti.dev
   resources:
   - agentbuilds
+  - agentcards
   - agents
   verbs:
   - create
@@ -52,6 +53,7 @@ rules:
   - agent.kagenti.dev
   resources:
   - agentbuilds/finalizers
+  - agentcards/finalizers
   - agents/finalizers
   verbs:
   - update
@@ -59,6 +61,7 @@ rules:
   - agent.kagenti.dev
   resources:
   - agentbuilds/status
+  - agentcards/status
   - agents/status
   verbs:
   - get

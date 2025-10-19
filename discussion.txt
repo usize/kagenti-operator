@@ -1,0 +1,205 @@
+feature: Dynamic Discovery and Invocation #303
+Open
+@usize
+Description
+usize
+opened yesterday · edited by usize
+Feature Description
+Problem
+Agent discovery, followed by invocation post-discovery, is an unsolved problem. Approaches exist, e.g. the Agntcy Dir project, however these solutions are experimental and require users to install external packages with rapidly changing interfaces. In lieu of this, Kagenti has an opportunity to provide a straightforward, durable and kubernetes native solution which will play well with external approaches as the space of agentic discovery evolves.
+
+Why this approach to "Dynamic Discovery and Invocation"
+Apart from core operational concerns like deployment, security, observability and lifecycle management a Kubernetes native representation of agents presents an opportunity to make deployed agents easier to discover and invoke at run time without the need for an external registry via a minimal extension of existing work.
+
+In practice this means:
+
+Creating an Agent Index CRD
+A lightweight controller periodically reconciles registered Components with kagenti.io/type=agent labels, caching their Agent Card metadata in the Agent CRD. This enables cluster native (near) real-time discovery without polling agents directly.
+
+Creating tooling (i.e. an MCP server) which can leverage this enhanced resource definition in order to invoke available agents.
+Proof of Concept
+A proof of concept can be found here, where a discovery command oc get agents is used to locate available agents in a cluster and an MCP server is used as a bridge where discovered agents may be invoked.
+
+Benefits
+Agent discovery is essentially "free" via Kubernetes labels.
+Storing basic agent card information in resource definitions allows agents to be discovered at any point in their lifecycle: e.g. when restarting which can be useful in adaptive systems where waiting for a resource to become ready is preferable to not knowing it exists until it is in a ready state.
+Synchronization creates an opportunity for handling/flagging sudden changes in agent signature including JWT signatures, listed capabilities and available endpoints.
+An MCP bridge for discovery and invocation of agents creates a simple entry point for both developers who may use agents as resources for cluster management or debugging and a simple plug and play solution for agent to agent communication in dynamic multi-agent systems.
+Proposed Solution
+Create an Agent Index CRD
+This may be achieved by either extending the existing Component CRD or by adding a new Agent CRD which serves this specific purpose. An advantage of a separate CRD is that it keeps the discovery lifecycle decoupled from the heavier build/deploy reconciliation handled by the Component controller.
+
+In either case, it will be necessary to synchronize available agent card data from existing components with a label matching kagenti.io/type=agent. This leverages labels already used by Kagenti’s deployment Helm charts, creating a tighter integration and avoiding the addition of unnecessary metadata complexity.
+
+An additional label is proposed in order to determine the agent protocol and derive the expected location and format of an agent card. For example: kagenti.io/agent_protocol=a2a.
+
+If the protocol is supported, synchronization proceeds. Data may then be discovered via a command e.g. oc get a2a-agents
+
+A2A-style agents are an excellent first supported protocol because they expose a .well-known/agent.json card, Kagenti is uniquely positioned to operationalize that discovery pattern natively in Kubernetes. This feature effectively turns A2A from a network-level convention into a cluster-level API.
+
+A minimal example of a useful fields for an Agent Index CRD would look something like this:
+
+spec:
+  name: string
+  protocol: string # e.g. a2a
+  endpoint: string # /.well-known/agent.json
+  capabilities: [] # optional
+status:
+  lastSyncTime: timestamp
+  validSignature: bool
+  ready: bool
+Build an MCP Bridge
+As in this example the bridge should leverage the Agent Index to find compatible agents, reveal their information, and optionally invoke them. This completes the feature by enabling real time interaction with managed agents either by human users or agents in dynamic multi-agent systems.
+
+note: The MCP Bridge should have a minimal footprint and feature set. For the time being it should be seen as a developer integration tool, most useful for development. In this framing, the bridge does not circumvent existing Kagenti access controls; it simply surfaces the AgentCard interface for introspection and controlled invocation.
+
+If it is desirable it could be leveraged into a more complete feature of Kagenti by adding: security and access control awareness, standard deployment during install time and functional examples of multi-agent systems leveraging it.
+
+Extended Opportunities
+Once the Agent Index exists, it could later back an OpenShift Console plugin showing discovered agents and their readiness, further closing the loop between CRDs and UI discovery without the need for external logic.
+
+Want to contribute?
+
+I would like to work on this issue.
+Additional Context
+No response
+
+Activity
+pdettori
+pdettori commented 17 hours ago
+pdettori
+17 hours ago · edited by pdettori
+Contributor
+@usize I think this is a very useful feature that complements very nicely the lifecycle management of agents in Kagenti, in particular with the new Agent CRD. I have couple of questions:
+
+Is AgentIndex namespace-scoped ?
+Is the idea to have one AgentIndex CR for each agent instance ? Or to index multiple agents (perhaps in the same namespace)
+Typically spec is used to set a desired state and status to indicate current state as observed by the controller, so I wonder if wouldn't be better to use status to store the index data. Maybe spec may still contain some info on often do indexing or perhaps a label selector - for example (assuming one AgentIndex per Agent)
+spec:
+    indexingPeriod: 5s
+    selector:
+      matchLabels:
+         app.kubernetes.io/name: my-agent
+         kagenti.io/type: agent
+status:
+    agentCard:
+        name: string
+        protocol: string # e.g. a2a
+        endpoint: string # /.well-known/agent.json
+        capabilities: {} # optional
+        skills: {} # optional
+    conditions:
+      - type: Synced
+        status: "True"
+        reason: SyncSucceeded
+        message: Agent index successfully synced
+        lastTransitionTime: "2025-10-16T01:25:00Z"
+      - type: Ready
+        status: "True"
+        reason: ReadyToServe
+        message: Agent index is ready for use
+        lastTransitionTime: "2025-10-16T01:25:00Z"
+pdettori
+pdettori commented 17 hours ago
+pdettori
+17 hours ago
+Contributor
+Additional thought - if we use the status for the index as in the example, we could extend the same Agent CRD instead of introducing an AgentIndex CRD. In that case we would not have the selector. On the other hand, we could keep Agent and AgentIndex decoupled and therefore AgentIndex could be more general (?).
+
+cooktheryan
+cooktheryan commented 4 hours ago
+cooktheryan
+4 hours ago
+Contributor
+I think we should lean namespace scoped. It would be nice to be able to do oc get agents and every single agent that is in the cluster would be listed but I don't feel like organizations would be open for someone to see and list every single agent based on minimal permissions whereas if we namespace it we can be more exact when defining the access
+
+usize
+usize commented 3 hours ago
+usize
+3 hours ago · edited by usize
+Author
+Wonderful comments. I'm so excited to try to get this built out.
+
+Scoping
+I agree with Ryan. We start at the namespace level and if cluster wide use cases become important, we can layer support on later.
+
+New CRD vs Extending Existing
+I had thought to have an AgentIndex CR for each agent. Using a selector to model groups of agents is interesting, but for the initial use case my idea was to keep the resolution of the index at a 1-to-1 correspondence. I do think it would be interesting to experiment with using selectors to built cross sectional views of agents down the line.
+
+Whether to have an AgentIndex as a separate CRD versus extending the existing Agent CRD is an open question to me. I can see advantages to both approaches.
+
+New CRD
+Advantage
+- Easy to experiment with or extend without impacting core lifecycle management.
+Disadvantage
+- Every Agent needs to "own" an AgentIndex, creating complexity and possibility of untracked agents becoming "invisible".
+- More complex ownership model also bleeds complexity into access control considerations: "who should be able to see these agents?"
+Extend Existing CRD
+Advantage
+- One source of truth: the agent card details can reasonably fit without seeming shoehorned in.
+- No risk of losing track of agents.
+Disadvantage
+- Adds agent card synchronization logic alongside lifecycle management logic.
+- Changes to our indexing approach has potential to impact entire system.
+To help me decide, I was planning to dive into the development branches where the CRD and Operator work is happening to judge how well the new fields might work within them.
+
+My instinct is that extending the existing CRD will be fine, but I didn't want to presume since it's a heavier change to the overall system.
+
+Spec vs. Status
+I think that's a great point. An agent could always change its communication protocol, so it's dynamic and might fit better as a status label. Same with the other fields you mentioned. I agree with this. I also like the more detailed conditions you proposed in your example.
+
+pdettori
+pdettori commented 3 hours ago
+pdettori
+3 hours ago
+Contributor
+keep the resolution of the index at a 1-to-1
+
+Definitely agree - I think it will keep indexing much simpler
+
+New CRD vs Extending Existing
+
+I am leaning more toward New CRD - this may make things more flexible and decoupled should new abstractions for agents come up in the community, but I'd like also to hear from the maintainers of the Agent CRD (@cwiklik )
+
+usize
+usize commented 3 hours ago
+usize
+3 hours ago
+Author
+New CRD is an easier jumping off point for me in both cases. I'll start there.
+
+Easy enough to merge it with the existing CRD if we think it seems like a good idea after seeing the first pass.
+
+cwiklik
+cwiklik commented 1 hour ago
+cwiklik
+1 hour ago · edited by cwiklik
+Contributor
+I agree that separating concerns seems like a better option.
+
+Existing Agent CR — represents real deployed agents in k8s
+
+Proposed AgentIndex CR — would serve as a lightweight catalog of discovered or registered agents
+
+Questions:
+
+if there is 1-1 relationship (Agent-AgentIndex), can we clearly define ownership
+How will synchronization and cleanup work when an Agent is deleted or changes state?
+Please use kagenti-operator project instead of platform-operator which will by sunset in a near future.
+
+usize
+usize commented 10 minutes ago
+usize
+10 minutes ago · edited by usize
+Author
+Perfect. I'll use kagenti-operator.
+
+I was going to use owner reference, with the AgentIndex pointing back to the Agent.
+
+With ownership established, the garbage collector should delete AgentIndex whenever its owner is deleted.
+
+For updates, the controller can watch for state transitions (especially readiness or endpoint changes) and re-sync the indexed card whenever those occur. We can also do a periodic re-sync to catch missed events.
+
+As we sync, if we find an orphaned AgentIndex we should delete it. If we find an Agent with no AgentIndex, we should create an AgentIndex.
+
+usize
