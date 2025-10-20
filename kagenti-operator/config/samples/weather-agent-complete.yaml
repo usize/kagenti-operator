@@ -4,7 +4,9 @@ metadata:
   name: weather-agent
   namespace: kagenti
   labels:
-    app: weather-service
+    app.kubernetes.io/name: weather-agent
+    kagenti.io/type: agent
+    kagenti.io/agent-protocol: a2a
 
   annotations:
     description: "Weather data processing agent"
