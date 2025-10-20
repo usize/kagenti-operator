@@ -51,7 +51,20 @@ var _ = Describe("AgentBuild Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: agentv1alpha1.AgentBuildSpec{
+						SourceSpec: agentv1alpha1.SourceSpec{
+							SourceRepository: "https://github.com/example/test-agent.git",
+						},
+						Pipeline: agentv1alpha1.PipelineSpec{
+							Namespace: "default",
+							Steps: []agentv1alpha1.PipelineStepSpec{
+								{
+									Name:      "build",
+									ConfigMap: "build-step",
+								},
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
