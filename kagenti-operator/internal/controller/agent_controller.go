@@ -23,6 +23,7 @@ import (
 	"time"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/distribution"
 	rbac "github.com/kagenti/operator/internal/rbac"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -44,6 +45,7 @@ type AgentReconciler struct {
 	client.Client
 	Scheme                   *runtime.Scheme
 	EnableClientRegistration bool
+	Distribution             distribution.Type
 }
 
 var (
@@ -480,26 +482,35 @@ func (r *AgentReconciler) createDeploymentForAgent(ctx context.Context, agent *a
 		podTemplateSpec.Spec.ServiceAccountName = rbacConfig.ServiceAccountName
 	}
 
-	// Set security context for the pod
+	// Set security context for the pod (if not already specified)
 	if podTemplateSpec.Spec.SecurityContext == nil {
-		podTemplateSpec.Spec.SecurityContext = &corev1.PodSecurityContext{
+		podSecCtx := &corev1.PodSecurityContext{
 			RunAsNonRoot: ptr.To(true),
-			RunAsUser:    ptr.To(int64(1000)),
-			FSGroup:      ptr.To(int64(1000)),
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		}
+
+		// On OpenShift, omit these to allow SCC admission controller to inject appropriate values
+		if r.Distribution != distribution.OpenShift {
+			podSecCtx.RunAsUser = ptr.To(int64(1000))
+			podSecCtx.FSGroup = ptr.To(int64(1000))
+		}
+
+		podTemplateSpec.Spec.SecurityContext = podSecCtx
 	}
-	// Set security context for each container
+
+	// Set security context for each container (only if not already specified)
 	for inx := range podTemplateSpec.Spec.Containers {
-		podTemplateSpec.Spec.Containers[inx].SecurityContext = &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr.To(false),
-			Privileged:               ptr.To(false),
-			ReadOnlyRootFilesystem:   ptr.To(true),
-			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
-			},
+		if podTemplateSpec.Spec.Containers[inx].SecurityContext == nil {
+			podTemplateSpec.Spec.Containers[inx].SecurityContext = &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				Privileged:               ptr.To(false),
+				ReadOnlyRootFilesystem:   ptr.To(true),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			}
 		}
 	}
 

@@ -39,6 +39,7 @@ import (
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/controller"
+	"github.com/kagenti/operator/internal/distribution"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -182,6 +183,10 @@ func main() {
 		})
 	}
 
+	// Detect Kubernetes distribution for platform-specific behavior
+	distType := distribution.Detect(ctrl.GetConfigOrDie())
+	setupLog.Info("Detected Kubernetes distribution", "distribution", distType)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsServerOptions,
@@ -215,6 +220,7 @@ func main() {
 		Client:                   mgr.GetClient(),
 		Scheme:                   mgr.GetScheme(),
 		EnableClientRegistration: enableClientRegistration,
+		Distribution:             distType,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
