@@ -128,8 +128,8 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	servicePort := r.getServicePort(service)
 	serviceURL := agentcard.GetServiceURL(agent.Name, agent.Namespace, servicePort)
 
-	// Fetch the agent card
-	agentCard, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL)
+	// Fetch the agent card data
+	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to fetch agent card", "agent", agent.Name, "url", serviceURL)
 		r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, "FetchFailed", err.Error())
@@ -137,7 +137,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Update the AgentCard status with the fetched card
-	if err := r.updateAgentCardStatus(ctx, agentCard, agentCard, protocol); err != nil {
+	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol); err != nil {
 		agentCardLogger.Error(err, "Failed to update AgentCard status")
 		return ctrl.Result{}, err
 	}
@@ -233,7 +233,7 @@ func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) 
 }
 
 // updateAgentCardStatus updates the AgentCard status with the fetched agent card
-func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, agentCard *agentv1alpha1.AgentCard, protocol string) error {
+func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Fetch the latest version
 		latest := &agentv1alpha1.AgentCard{}
@@ -245,7 +245,7 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 		}
 
 		// Update status fields
-		latest.Status.AgentCard = agentCard
+		latest.Status.Card = cardData
 		latest.Status.Protocol = protocol
 		latest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
 
@@ -255,7 +255,7 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "SyncSucceeded",
-			Message:            fmt.Sprintf("Successfully fetched agent card for %s", agentCard.Name),
+			Message:            fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name),
 		})
 
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
