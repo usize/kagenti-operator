@@ -2,8 +2,9 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/agent.kagenti.dev_kagentiagents.yaml
-- bases/agent.kagenti.dev_kagentiagentbuilds.yaml
+- bases/agent.kagenti.dev_agents.yaml
+- bases/agent.kagenti.dev_agentbuilds.yaml
+- bases/agent.kagenti.dev_agentcards.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
