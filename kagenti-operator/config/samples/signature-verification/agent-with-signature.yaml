@@ -1,0 +1,34 @@
+# Example: Agent with signature verification using the new targetRef approach
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: weather-agent-signed
+  namespace: default
+  labels:
+    kagenti.io/type: agent
+    kagenti.io/protocol: a2a
+spec:
+  image: example/weather-agent:v1.0.0
+  replicas: 1
+  env:
+    - name: AGENT_NAME
+      value: "Weather Agent"
+    - name: AGENT_DESCRIPTION
+      value: "Provides weather information"
+---
+# AgentCard with targetRef (preferred) - references the Agent workload directly
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: weather-agent-card
+  namespace: default
+spec:
+  syncPeriod: "30s"
+  targetRef:
+    apiVersion: agent.kagenti.dev/v1alpha1
+    kind: Agent
+    name: weather-agent-signed
+  # Optional: identity binding for SPIFFE ID verification
+  identityBinding:
+    allowedSpiffeIDs:
+      - "spiffe://cluster.local/ns/default/sa/weather-agent-signed-sa"

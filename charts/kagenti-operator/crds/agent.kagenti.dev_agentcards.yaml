@@ -22,10 +22,22 @@ spec:
       jsonPath: .status.protocol
       name: Protocol
       type: string
+    - description: Workload Kind
+      jsonPath: .status.targetRef.kind
+      name: Kind
+      type: string
+    - description: Target Workload
+      jsonPath: .status.targetRef.name
+      name: Target
+      type: string
     - description: Agent Name
       jsonPath: .status.card.name
       name: Agent
       type: string
+    - description: Signature Verified
+      jsonPath: .status.validSignature
+      name: Verified
+      type: boolean
     - description: Identity Bound
       jsonPath: .status.bindingStatus.bound
       name: Bound
@@ -80,6 +92,16 @@ spec:
                       type: string
                     minItems: 1
                     type: array
+                  expectedSpiffeID:
+                    description: |-
+                      ExpectedSpiffeID overrides the auto-derived SPIFFE ID for this workload.
+                      Use this when your SPIRE configuration uses a non-standard identity format
+                      (e.g., pod labels, container names, or other workload attestor selectors).
+                      If not specified, the controller derives the ID as:
+                        spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
+                      See: https://github.com/spiffe/spire/blob/main/doc/plugin_agent_workloadattestor_k8s.md
+                    pattern: ^spiffe://[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9](/[a-zA-Z0-9\-\._~%!$&'()*+,;=:@]+)*$
+                    type: string
                   strict:
                     default: false
                     description: |-
@@ -96,7 +118,10 @@ spec:
                 - allowedSpiffeIDs
                 type: object
               selector:
-                description: Selector identifies the Agent to index
+                description: |-
+                  Selector identifies the Agent to index using label matching.
+                  Deprecated: Use TargetRef instead. Selector is kept for backward compatibility.
+                  If both TargetRef and Selector are specified, TargetRef takes precedence.
                 properties:
                   matchLabels:
                     additionalProperties:
@@ -112,8 +137,31 @@ spec:
                 description: SyncPeriod is how often to re-fetch the agent card (e.g.,
                   "30s", "5m")
                 type: string
-            required:
-            - selector
+              targetRef:
+                description: |-
+                  TargetRef identifies the workload backing this agent using duck typing.
+                  The referenced workload must have the required Kagenti labels (kagenti.io/type=agent).
+                  This is the preferred way to reference agent workloads.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target resource
+                      (e.g., "apps/v1")
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource (e.g., "Deployment",
+                      "StatefulSet")
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the target resource
+                    minLength: 1
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
             type: object
           status:
             description: AgentCardStatus defines the observed state of AgentCard.
@@ -175,6 +223,40 @@ spec:
                   name:
                     description: Name is the human-readable name of the agent
                     type: string
+                  signatures:
+                    description: |-
+                      Signatures contains JWS signatures per A2A spec section 8.4.2.
+                      Each element uses JWS JSON Serialization with protected header containing
+                      the algorithm (alg), key ID (kid), and optional SPIFFE ID (spiffe_id).
+                    items:
+                      description: |-
+                        AgentCardSignature represents a JWS signature on an AgentCard.
+                        Follows the A2A specification section 8.4.2 — JWS JSON Serialization.
+                      properties:
+                        header:
+                          description: Header contains optional unprotected JWS header
+                            parameters.
+                          properties:
+                            timestamp:
+                              description: Timestamp is when the signature was created
+                                (ISO 8601 string)
+                              type: string
+                          type: object
+                        protected:
+                          description: |-
+                            Protected is the base64url-encoded JWS protected header.
+                            Decoded, it contains {"alg":"RS256","kid":"key-1","spiffe_id":"spiffe://..."}.
+                          type: string
+                        signature:
+                          description: |-
+                            Signature is the base64url-encoded JWS signature value.
+                            The signing input is: BASE64URL(protected) || '.' || BASE64URL(canonical_payload)
+                          type: string
+                      required:
+                      - protected
+                      - signature
+                      type: object
+                    type: array
                   skills:
                     description: Skills is a list of skills/capabilities this agent
                       offers
@@ -314,9 +396,51 @@ spec:
               protocol:
                 description: Protocol is the detected agent protocol (e.g., "a2a")
                 type: string
+              signatureIdentityMatch:
+                description: |-
+                  SignatureIdentityMatch indicates if both signature AND identity binding pass.
+                  true only when ValidSignature is true AND BindingStatus.Bound is true.
+                type: boolean
+              signatureKeyId:
+                description: SignatureKeyID is the key ID used for verification (from
+                  JWS protected header kid)
+                type: string
+              signatureSpiffeId:
+                description: |-
+                  SignatureSpiffeID is the SPIFFE ID extracted from the JWS protected header.
+                  This enables cross-referencing the signer's identity with the identity binding evaluation.
+                type: string
+              signatureVerificationDetails:
+                description: SignatureVerificationDetails contains details about the
+                  last signature verification
+                type: string
+              targetRef:
+                description: |-
+                  TargetRef contains the resolved reference to the backing workload.
+                  This is populated after the controller successfully locates the workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target resource
+                      (e.g., "apps/v1")
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource (e.g., "Deployment",
+                      "StatefulSet")
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the target resource
+                    minLength: 1
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
               validSignature:
                 description: ValidSignature indicates if the agent card signature
-                  was validated (future use)
+                  was validated
                 type: boolean
             type: object
         type: object

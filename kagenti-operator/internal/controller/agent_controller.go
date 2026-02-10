@@ -903,9 +903,18 @@ func (r *AgentReconciler) restoreAgentFromBinding(ctx context.Context, agent *ag
 	return ctrl.Result{}, nil
 }
 
-// agentCardSelectsAgent checks if an AgentCard's selector matches an Agent
+// agentCardSelectsAgent checks if an AgentCard's selector matches an Agent.
+// Returns true if the card uses a selector and all its matchLabels are present on the agent,
+// or if the card uses a targetRef that references this specific Agent by name.
 func (r *AgentReconciler) agentCardSelectsAgent(card *agentv1alpha1.AgentCard, agent *agentv1alpha1.Agent) bool {
-	if agent.Labels == nil {
+	// Check targetRef first (preferred)
+	if card.Spec.TargetRef != nil {
+		return card.Spec.TargetRef.Kind == "Agent" &&
+			card.Spec.TargetRef.Name == agent.Name
+	}
+
+	// Fall back to selector (legacy) — guard against nil
+	if card.Spec.Selector == nil || agent.Labels == nil {
 		return false
 	}
 	for key, value := range card.Spec.Selector.MatchLabels {

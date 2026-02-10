@@ -126,9 +126,27 @@ type AgentCardStatus struct {
 	// +optional
 	TargetRef *TargetRef `json:"targetRef,omitempty"`
 
-	// ValidSignature indicates if the agent card signature was validated (future use)
+	// ValidSignature indicates if the agent card signature was validated
 	// +optional
 	ValidSignature *bool `json:"validSignature,omitempty"`
+
+	// SignatureVerificationDetails contains details about the last signature verification
+	// +optional
+	SignatureVerificationDetails string `json:"signatureVerificationDetails,omitempty"`
+
+	// SignatureKeyID is the key ID used for verification (from JWS protected header kid)
+	// +optional
+	SignatureKeyID string `json:"signatureKeyId,omitempty"`
+
+	// SignatureSpiffeID is the SPIFFE ID extracted from the JWS protected header.
+	// This enables cross-referencing the signer's identity with the identity binding evaluation.
+	// +optional
+	SignatureSpiffeID string `json:"signatureSpiffeId,omitempty"`
+
+	// SignatureIdentityMatch indicates if both signature AND identity binding pass.
+	// true only when ValidSignature is true AND BindingStatus.Bound is true.
+	// +optional
+	SignatureIdentityMatch *bool `json:"signatureIdentityMatch,omitempty"`
 
 	// CardId is the SHA256 hash of the JCS-canonicalized card content (optional drift detection)
 	// +optional
@@ -199,6 +217,37 @@ type AgentCardData struct {
 	// SupportsAuthenticatedExtendedCard indicates if the agent has an extended card
 	// +optional
 	SupportsAuthenticatedExtendedCard *bool `json:"supportsAuthenticatedExtendedCard,omitempty"`
+
+	// Signatures contains JWS signatures per A2A spec section 8.4.2.
+	// Each element uses JWS JSON Serialization with protected header containing
+	// the algorithm (alg), key ID (kid), and optional SPIFFE ID (spiffe_id).
+	// +optional
+	Signatures []AgentCardSignature `json:"signatures,omitempty"`
+}
+
+// AgentCardSignature represents a JWS signature on an AgentCard.
+// Follows the A2A specification section 8.4.2 — JWS JSON Serialization.
+type AgentCardSignature struct {
+	// Protected is the base64url-encoded JWS protected header.
+	// Decoded, it contains {"alg":"RS256","kid":"key-1","spiffe_id":"spiffe://..."}.
+	// +required
+	Protected string `json:"protected"`
+
+	// Signature is the base64url-encoded JWS signature value.
+	// The signing input is: BASE64URL(protected) || '.' || BASE64URL(canonical_payload)
+	// +required
+	Signature string `json:"signature"`
+
+	// Header contains optional unprotected JWS header parameters.
+	// +optional
+	Header *SignatureHeader `json:"header,omitempty"`
+}
+
+// SignatureHeader contains unprotected JWS header parameters.
+type SignatureHeader struct {
+	// Timestamp is when the signature was created (ISO 8601 string)
+	// +optional
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // AgentCapabilities defines A2A feature support
@@ -265,6 +314,7 @@ type SkillParameter struct {
 // +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".status.targetRef.kind",description="Workload Kind"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".status.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".status.card.name",description="Agent Name"
+// +kubebuilder:printcolumn:name="Verified",type="boolean",JSONPath=".status.validSignature",description="Signature Verified"
 // +kubebuilder:printcolumn:name="Bound",type="boolean",JSONPath=".status.bindingStatus.bound",description="Identity Bound"
 // +kubebuilder:printcolumn:name="Synced",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status",description="Sync Status"
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"

@@ -83,3 +83,22 @@ certmanager:
 # [NETWORK POLICIES]: To enable NetworkPolicies set true
 networkPolicy:
   enable: false
+
+# [SIGNATURE VERIFICATION]: A2A agent card signature verification
+signatureVerification:
+  # Enable signature verification for agent cards
+  enabled: false
+  # Audit mode: log failures but don't block (use for gradual rollout)
+  auditMode: false
+  # Provider type: "secret", "jwks", or "none"
+  provider: "none"
+  # Secret provider configuration
+  secret:
+    name: ""
+    namespace: ""
+    key: ""
+  # JWKS provider configuration
+  jwks:
+    url: ""
+  # Enforce network policies based on signature verification
+  enforceNetworkPolicies: false

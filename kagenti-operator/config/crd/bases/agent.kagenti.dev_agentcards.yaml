@@ -34,6 +34,10 @@ spec:
       jsonPath: .status.card.name
       name: Agent
       type: string
+    - description: Signature Verified
+      jsonPath: .status.validSignature
+      name: Verified
+      type: boolean
     - description: Identity Bound
       jsonPath: .status.bindingStatus.bound
       name: Bound
@@ -219,6 +223,40 @@ spec:
                   name:
                     description: Name is the human-readable name of the agent
                     type: string
+                  signatures:
+                    description: |-
+                      Signatures contains JWS signatures per A2A spec section 8.4.2.
+                      Each element uses JWS JSON Serialization with protected header containing
+                      the algorithm (alg), key ID (kid), and optional SPIFFE ID (spiffe_id).
+                    items:
+                      description: |-
+                        AgentCardSignature represents a JWS signature on an AgentCard.
+                        Follows the A2A specification section 8.4.2 — JWS JSON Serialization.
+                      properties:
+                        header:
+                          description: Header contains optional unprotected JWS header
+                            parameters.
+                          properties:
+                            timestamp:
+                              description: Timestamp is when the signature was created
+                                (ISO 8601 string)
+                              type: string
+                          type: object
+                        protected:
+                          description: |-
+                            Protected is the base64url-encoded JWS protected header.
+                            Decoded, it contains {"alg":"RS256","kid":"key-1","spiffe_id":"spiffe://..."}.
+                          type: string
+                        signature:
+                          description: |-
+                            Signature is the base64url-encoded JWS signature value.
+                            The signing input is: BASE64URL(protected) || '.' || BASE64URL(canonical_payload)
+                          type: string
+                      required:
+                      - protected
+                      - signature
+                      type: object
+                    type: array
                   skills:
                     description: Skills is a list of skills/capabilities this agent
                       offers
@@ -358,6 +396,24 @@ spec:
               protocol:
                 description: Protocol is the detected agent protocol (e.g., "a2a")
                 type: string
+              signatureIdentityMatch:
+                description: |-
+                  SignatureIdentityMatch indicates if both signature AND identity binding pass.
+                  true only when ValidSignature is true AND BindingStatus.Bound is true.
+                type: boolean
+              signatureKeyId:
+                description: SignatureKeyID is the key ID used for verification (from
+                  JWS protected header kid)
+                type: string
+              signatureSpiffeId:
+                description: |-
+                  SignatureSpiffeID is the SPIFFE ID extracted from the JWS protected header.
+                  This enables cross-referencing the signer's identity with the identity binding evaluation.
+                type: string
+              signatureVerificationDetails:
+                description: SignatureVerificationDetails contains details about the
+                  last signature verification
+                type: string
               targetRef:
                 description: |-
                   TargetRef contains the resolved reference to the backing workload.
@@ -384,7 +440,7 @@ spec:
                 type: object
               validSignature:
                 description: ValidSignature indicates if the agent card signature
-                  was validated (future use)
+                  was validated
                 type: boolean
             type: object
         type: object

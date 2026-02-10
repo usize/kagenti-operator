@@ -40,6 +40,7 @@ import (
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/distribution"
+	"github.com/kagenti/operator/internal/signature"
 	webhookv1alpha1 "github.com/kagenti/operator/internal/webhook/v1alpha1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	// +kubebuilder:scaffold:imports
@@ -71,6 +72,16 @@ func main() {
 	var defaultTrustDomain string
 	var enableLegacyAgentCRD bool
 
+	// Signature verification flags
+	var requireA2ASignature bool
+	var signatureAuditMode bool
+	var signatureProvider string
+	var signatureSecretName string
+	var signatureSecretNamespace string
+	var signatureSecretKey string
+	var signatureJWKSURL string
+	var enforceNetworkPolicies bool
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -94,6 +105,25 @@ func main() {
 		"Default SPIFFE trust domain for identity binding evaluation")
 	flag.BoolVar(&enableLegacyAgentCRD, "enable-legacy-agent-crd", true,
 		"Enable support for legacy Agent CRD. Set to false after full migration to workload-based agents (Deployments/StatefulSets).")
+
+	// Signature verification flags
+	flag.BoolVar(&requireA2ASignature, "require-a2a-signature", false,
+		"Require A2A agent cards to have a valid signature")
+	flag.BoolVar(&signatureAuditMode, "signature-audit-mode", false,
+		"When true, log signature verification failures but don't block (use for rollout)")
+	flag.StringVar(&signatureProvider, "signature-provider", "none",
+		"Signature verification provider type: 'secret', 'jwks', or 'none'")
+	flag.StringVar(&signatureSecretName, "signature-secret-name", "",
+		"Name of the Kubernetes Secret containing the signing public key")
+	flag.StringVar(&signatureSecretNamespace, "signature-secret-namespace", "",
+		"Namespace of the Kubernetes Secret containing the signing public key")
+	flag.StringVar(&signatureSecretKey, "signature-secret-key", "",
+		"Key within the Secret to use (if not set, auto-discovery is used)")
+	flag.StringVar(&signatureJWKSURL, "signature-jwks-url", "",
+		"URL of the JWKS endpoint for signature verification")
+	flag.BoolVar(&enforceNetworkPolicies, "enforce-network-policies", false,
+		"Create NetworkPolicies to restrict traffic for agents with unverified signatures")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -250,15 +280,56 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize signature verification provider
+	var sigProvider signature.Provider
+	if requireA2ASignature {
+		sigConfig := &signature.Config{
+			Type:            signature.ProviderType(signatureProvider),
+			SecretName:      signatureSecretName,
+			SecretNamespace: signatureSecretNamespace,
+			SecretKey:       signatureSecretKey,
+			JWKSURL:         signatureJWKSURL,
+			AuditMode:       signatureAuditMode,
+		}
+
+		var providerErr error
+		sigProvider, providerErr = signature.NewProvider(sigConfig)
+		if providerErr != nil {
+			setupLog.Error(providerErr, "unable to create signature provider")
+			os.Exit(1)
+		}
+		setupLog.Info("Signature verification enabled",
+			"provider", signatureProvider,
+			"auditMode", signatureAuditMode,
+			"requireSignature", requireA2ASignature)
+	}
+
 	if err = (&controller.AgentCardReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		Recorder:             mgr.GetEventRecorderFor("agentcard-controller"),
 		TrustDomain:          defaultTrustDomain,
 		EnableLegacyAgentCRD: enableLegacyAgentCRD,
+		SignatureProvider:     sigProvider,
+		RequireSignature:     requireA2ASignature,
+		SignatureAuditMode:   signatureAuditMode,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)
+	}
+
+	// Network policy controller (optional, enforces network isolation based on signature verification)
+	if enforceNetworkPolicies {
+		if err = (&controller.AgentCardNetworkPolicyReconciler{
+			Client:                 mgr.GetClient(),
+			Scheme:                 mgr.GetScheme(),
+			EnforceNetworkPolicies: enforceNetworkPolicies,
+			EnableLegacyAgentCRD:   enableLegacyAgentCRD,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AgentCardNetworkPolicy")
+			os.Exit(1)
+		}
+		setupLog.Info("Network policy enforcement enabled for signature verification")
 	}
 	// AgentCardSync controller now watches Deployments, StatefulSets, and optionally Agent CRDs
 	// It automatically creates AgentCards for workloads with agent labels
