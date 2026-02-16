@@ -716,6 +716,161 @@ var _ = Describe("Signature Verification", func() {
 		})
 	})
 
+	Context("Spoofed JWS spiffe_id - should reject when JWS identity doesn't match workload", func() {
+		const (
+			agentName     = "sig-spoof-agent"
+			agentCardName = "sig-spoof-card"
+			namespace     = "default"
+			secretName    = "sig-spoof-keys"
+			trustDomain   = "test.local"
+		)
+
+		ctx := context.Background()
+
+		AfterEach(func() {
+			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
+			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &corev1.Secret{}, secretName, namespace)
+		})
+
+		It("should set signatureIdentityMatch=false when JWS spiffe_id doesn't match workload SA", func() {
+			By("generating key pair")
+			privKey, pubPEM := generateTestRSAKeyPair()
+
+			By("creating secret with the signing public key")
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: namespace},
+				Data:       map[string][]byte{"key-1": pubPEM},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			By("creating Agent with service account 'real-sa'")
+			agent := &agentv1alpha1.Agent{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      agentName,
+					Namespace: namespace,
+					Labels: map[string]string{
+						"app.kubernetes.io/name": agentName,
+						LabelAgentType:           LabelValueAgent,
+						LabelAgentProtocol:       "a2a",
+					},
+				},
+				Spec: agentv1alpha1.AgentSpec{
+					PodTemplateSpec: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							ServiceAccountName: "real-sa",
+							Containers: []corev1.Container{
+								{Name: "agent", Image: "test-image:latest"},
+							},
+						},
+					},
+					ImageSource: agentv1alpha1.ImageSource{Image: ptr.To("test-image:latest")},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, agent); err != nil {
+					return err
+				}
+				agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{Phase: agentv1alpha1.PhaseReady}
+				return k8sClient.Status().Update(ctx, agent)
+			}).Should(Succeed())
+
+			By("creating a Service")
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
+					Selector: map[string]string{"app.kubernetes.io/name": agentName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, service)).To(Succeed())
+
+			By("creating signed card with SPOOFED spiffe_id (claims 'impostor-sa' but workload is 'real-sa')")
+			// The attacker signs the card asserting spiffe_id=impostor-sa.
+			// The workload actually runs as real-sa.
+			// Both identities are in the allowlist, so a naive check passes either one.
+			// But a cross-check must detect the mismatch and reject.
+			impostorSpiffeID := "spiffe://" + trustDomain + "/ns/" + namespace + "/sa/impostor-sa"
+			realSpiffeID := "spiffe://" + trustDomain + "/ns/" + namespace + "/sa/real-sa"
+			cardData := &agentv1alpha1.AgentCardData{
+				Name:    "Spoofed Identity Agent",
+				Version: "1.0.0",
+				URL:     "http://localhost:8000",
+			}
+			jwsSig := buildTestJWS(cardData, privKey, "key-1", impostorSpiffeID)
+			cardData.Signatures = []agentv1alpha1.AgentCardSignature{jwsSig}
+
+			By("creating AgentCard — allowlist contains BOTH identities (real and impostor)")
+			agentCard := &agentv1alpha1.AgentCard{
+				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
+				Spec: agentv1alpha1.AgentCardSpec{
+					SyncPeriod: "30s",
+					Selector: &agentv1alpha1.AgentSelector{
+						MatchLabels: map[string]string{
+							"app.kubernetes.io/name": agentName,
+							LabelAgentType:           LabelValueAgent,
+						},
+					},
+					IdentityBinding: &agentv1alpha1.IdentityBinding{
+						TrustDomain: trustDomain,
+						// Both are in the allowlist — the naive check passes either one.
+						// Only a cross-check (JWS identity == workload identity) catches this.
+						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{
+							agentv1alpha1.SpiffeID(realSpiffeID),
+							agentv1alpha1.SpiffeID(impostorSpiffeID),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
+
+			By("reconciling with signature verification + identity binding")
+			provider, err := signature.NewSecretProvider(&signature.Config{
+				Type:            signature.ProviderTypeSecret,
+				SecretName:      secretName,
+				SecretNamespace: namespace,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			provider.(*signature.SecretProvider).SetClient(k8sClient)
+
+			reconciler := &AgentCardReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				AgentFetcher:       &mockFetcher{cardData: cardData},
+				RequireSignature:   true,
+				SignatureProvider:  provider,
+				SignatureAuditMode: false,
+				TrustDomain:        trustDomain,
+			}
+
+			// Reconcile: first adds finalizer
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: agentCardName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile: verifies signature + evaluates binding
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: agentCardName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying signatureIdentityMatch is false — JWS identity vs workload identity mismatch")
+			// The JWS claims spiffe_id=impostor-sa, workload runs as real-sa.
+			// Both are in the allowlist, so a naive allowlist-only check passes.
+			// A correct implementation cross-checks JWS identity against workload
+			// identity and rejects the mismatch.
+			card := &agentv1alpha1.AgentCard{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, card)).To(Succeed())
+			Expect(card.Status.SignatureIdentityMatch).NotTo(BeNil(),
+				"SignatureIdentityMatch should be set after reconcile with signature verification + binding")
+			Expect(*card.Status.SignatureIdentityMatch).To(BeFalse(),
+				"JWS spiffe_id (impostor-sa) does not match workload SA (real-sa) — cross-check should reject")
+		})
+	})
+
 	Context("Label Propagation — Valid Signature with targetRef Deployment", func() {
 		const (
 			deploymentName = "sig-label-agent"
