@@ -310,7 +310,7 @@ func main() {
 		Recorder:             mgr.GetEventRecorderFor("agentcard-controller"),
 		TrustDomain:          defaultTrustDomain,
 		EnableLegacyAgentCRD: enableLegacyAgentCRD,
-		SignatureProvider:     sigProvider,
+		SignatureProvider:    sigProvider,
 		RequireSignature:     requireA2ASignature,
 		SignatureAuditMode:   signatureAuditMode,
 	}).SetupWithManager(mgr); err != nil {

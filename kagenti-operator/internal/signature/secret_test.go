@@ -174,7 +174,7 @@ func TestSecretProvider_FallbackKeyRotation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "keys", Namespace: "system"},
 		Data: map[string][]byte{
 			"my-key":  newPubPEM, // primary — doesn't match
-			"old-key": pubPEM,   // fallback — matches
+			"old-key": pubPEM,    // fallback — matches
 		},
 	}
 	sp := newSecretProviderForTest(t, secret, &Config{

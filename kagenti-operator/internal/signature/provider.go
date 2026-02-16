@@ -88,4 +88,3 @@ type Config struct {
 	// Common settings
 	AuditMode bool // If true, log verification failures but don't block
 }
-

@@ -77,4 +77,3 @@ func RecordVerification(provider string, verified bool, auditMode bool) {
 func RecordError(provider string, errorType string) {
 	SignatureVerificationErrors.WithLabelValues(provider, errorType).Inc()
 }
-
