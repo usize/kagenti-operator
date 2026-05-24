@@ -4,6 +4,7 @@
 resources:
 - bases/agent.kagenti.dev_agentbuilds.yaml
 - bases/agent.kagenti.dev_agentcards.yaml
+- bases/gateway.kagenti.dev_aigateways.yaml
 
 # +kubebuilder:scaffold:crdkustomizeresource
 

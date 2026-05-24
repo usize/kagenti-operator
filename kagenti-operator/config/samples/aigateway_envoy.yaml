@@ -1,0 +1,24 @@
+apiVersion: gateway.kagenti.dev/v1alpha1
+kind: AIGateway
+metadata:
+  name: ai-gateway
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: http
+      port: 8080
+      protocol: HTTP
+  providers:
+    - name: openai
+      endpoint: https://api.openai.com/v1
+      schema: OpenAI
+      credentialRef:
+        name: openai-secret
+      models:
+        - gpt-4o
+        - gpt-4o-mini
+    - name: ollama
+      endpoint: http://ollama.ollama.svc:11434
+      schema: OpenAI
+      models:
+        - llama-3

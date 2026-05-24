@@ -24,3 +24,23 @@ webhooks:
     resources:
     - agentcards
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-gateway-kagenti-dev-v1alpha1-aigateway
+  failurePolicy: Fail
+  name: vaigateway.kb.io
+  rules:
+  - apiGroups:
+    - gateway.kagenti.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - aigateways
+  sideEffects: None

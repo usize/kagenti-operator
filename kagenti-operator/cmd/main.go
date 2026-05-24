@@ -37,6 +37,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	gatewayv1alpha1 "github.com/kagenti/operator/api/gateway/v1alpha1"
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/controller"
@@ -53,6 +54,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(agentv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -277,6 +279,19 @@ func main() {
 	}
 	if err = webhookv1alpha1.SetupAgentCardWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "AgentCard")
+		os.Exit(1)
+	}
+
+	if err = (&controller.AIGatewayReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("aigateway-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AIGateway")
+		os.Exit(1)
+	}
+	if err = webhookv1alpha1.SetupAIGatewayWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "AIGateway")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

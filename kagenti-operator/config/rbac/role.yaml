@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - secrets
   - services
   verbs:
   - get
@@ -50,11 +51,63 @@ rules:
   - patch
   - update
 - apiGroups:
+  - aigateway.envoyproxy.io
+  resources:
+  - aigatewayroutes
+  - aiservicebackends
+  - backendsecuritypolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
   - statefulsets
   verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.kagenti.dev
+  resources:
+  - aigateways
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.kagenti.dev
+  resources:
+  - aigateways/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - gateway.kagenti.dev
+  resources:
+  - aigateways/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - create
+  - delete
   - get
   - list
   - patch
