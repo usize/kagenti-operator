@@ -121,6 +121,22 @@ func (v *AIGatewayValidator) validateAIGateway(aigw *gatewayv1alpha1.AIGateway) 
 		}
 	}
 
+	// Validate mTLS fields.
+	if aigw.Spec.MTLS != nil {
+		if aigw.Spec.MTLS.TrustDomain == "" {
+			errs = append(errs, "spec.mtls.trustDomain is required when mtls is configured")
+		}
+		if aigw.Spec.MTLS.TrustBundleConfigMap.Name == "" {
+			errs = append(errs, "spec.mtls.trustBundleConfigMap.name is required")
+		}
+		if aigw.Spec.MTLS.TrustBundleConfigMap.Namespace == "" {
+			errs = append(errs, "spec.mtls.trustBundleConfigMap.namespace is required")
+		}
+		if aigw.Spec.MTLS.ServerCertRef != nil && aigw.Spec.MTLS.ServerCertRef.Name == "" {
+			errs = append(errs, "spec.mtls.serverCertRef.name must be non-empty when serverCertRef is specified")
+		}
+	}
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("validation failed: %s", strings.Join(errs, "; "))
 	}

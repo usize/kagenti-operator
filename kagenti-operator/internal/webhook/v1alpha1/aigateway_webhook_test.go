@@ -255,3 +255,115 @@ func TestDeleteRejectsWrongType(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("expected an AIGateway"))
 }
+
+func TestAcceptsValidMTLSConfig(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+		TrustDomain: "example.org",
+		TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+			Name:      "spire-bundle",
+			Namespace: "spire-system",
+		},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestRejectsEmptyMTLSTrustDomain(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+		TrustDomain: "",
+		TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+			Name:      "spire-bundle",
+			Namespace: "spire-system",
+		},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("trustDomain is required"))
+}
+
+func TestRejectsEmptyMTLSTrustBundleConfigMapName(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+		TrustDomain: "example.org",
+		TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+			Name:      "",
+			Namespace: "spire-system",
+		},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("trustBundleConfigMap.name is required"))
+}
+
+func TestRejectsEmptyMTLSTrustBundleConfigMapNamespace(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+		TrustDomain: "example.org",
+		TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+			Name:      "spire-bundle",
+			Namespace: "",
+		},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("trustBundleConfigMap.namespace is required"))
+}
+
+func TestRejectsEmptyMTLSServerCertRefName(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+		TrustDomain: "example.org",
+		TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+			Name:      "spire-bundle",
+			Namespace: "spire-system",
+		},
+		ServerCertRef: &gatewayv1alpha1.CertificateReference{Name: ""},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serverCertRef.name must be non-empty"))
+}
+
+func TestAcceptsMTLSWithServerCertRef(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+		TrustDomain: "example.org",
+		TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+			Name:      "spire-bundle",
+			Namespace: "spire-system",
+		},
+		ServerCertRef: &gatewayv1alpha1.CertificateReference{Name: "my-tls-cert"},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestAcceptsNilMTLS(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.MTLS = nil
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).NotTo(HaveOccurred())
+}
