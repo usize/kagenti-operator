@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"time"
 )
 
 // spiffeBundleJSON is the minimal structure of a SPIFFE trust bundle document.
@@ -53,9 +54,14 @@ func ParseTrustBundleToPEM(spiffeJSON string) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode x5c cert from SPIFFE bundle: %w", err)
 			}
-			// Validate it's a parseable certificate.
-			if _, err := x509.ParseCertificate(der); err != nil {
+			cert, err := x509.ParseCertificate(der)
+			if err != nil {
 				return nil, fmt.Errorf("failed to parse certificate from SPIFFE bundle: %w", err)
+			}
+			// Skip expired certificates. SPIRE bundles retain rotated-out
+			// CAs that may have expired; Envoy rejects bundles containing them.
+			if cert.NotAfter.Before(time.Now()) {
+				continue
 			}
 			block := &pem.Block{
 				Type:  "CERTIFICATE",
