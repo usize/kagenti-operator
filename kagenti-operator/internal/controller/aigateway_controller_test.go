@@ -740,22 +740,15 @@ var _ = Describe("AIGateway Controller", func() {
 			Expect(ref["kind"]).To(Equal("Gateway"))
 			Expect(ref["name"]).To(Equal(aigwName))
 
-			By("checking ClientTrafficPolicy client validation mode")
-			mode, _, _ := unstructured.NestedString(ctp.Object, "spec", "tls", "clientValidation", "mode")
-			Expect(mode).To(Equal("RequireAndVerify"))
+			By("checking ClientTrafficPolicy client validation optional=false")
+			optional, _, _ := unstructured.NestedBool(ctp.Object, "spec", "tls", "clientValidation", "optional")
+			Expect(optional).To(BeFalse())
 
 			By("checking ClientTrafficPolicy CA ref")
 			caRefs, _, _ := unstructured.NestedSlice(ctp.Object, "spec", "tls", "clientValidation", "caCertificateRefs")
 			Expect(caRefs).To(HaveLen(1))
 			caRef := caRefs[0].(map[string]interface{})
 			Expect(caRef["name"]).To(Equal(aigwName + "-mtls-ca"))
-
-			By("checking ClientTrafficPolicy URI prefix")
-			uris, _, _ := unstructured.NestedSlice(ctp.Object, "spec", "tls", "clientValidation", "subjectAltNames", "uris")
-			Expect(uris).To(HaveLen(1))
-			uri := uris[0].(map[string]interface{})
-			Expect(uri["type"]).To(Equal("Prefix"))
-			Expect(uri["value"]).To(Equal("spiffe://example.org/"))
 
 			By("verifying the self-signed server cert Secret was created")
 			serverSecret := &corev1.Secret{}

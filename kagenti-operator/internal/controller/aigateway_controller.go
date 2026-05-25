@@ -481,20 +481,13 @@ func (r *AIGatewayReconciler) reconcileMTLS(ctx context.Context, aigw *gatewayv1
 			},
 			"tls": map[string]interface{}{
 				"clientValidation": map[string]interface{}{
-					"mode": "RequireAndVerify",
+					// optional=false (default) means clients MUST present a valid cert.
+					"optional": false,
 					"caCertificateRefs": []interface{}{
 						map[string]interface{}{
 							"kind":  "Secret",
 							"group": "",
 							"name":  caSecretName,
-						},
-					},
-					"subjectAltNames": map[string]interface{}{
-						"uris": []interface{}{
-							map[string]interface{}{
-								"type":  "Prefix",
-								"value": fmt.Sprintf("spiffe://%s/", mtls.TrustDomain),
-							},
 						},
 					},
 				},
