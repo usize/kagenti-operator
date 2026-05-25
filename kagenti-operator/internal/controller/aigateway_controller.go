@@ -18,12 +18,20 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +48,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	gatewayv1alpha1 "github.com/kagenti/operator/api/gateway/v1alpha1"
+	"github.com/kagenti/operator/internal/spiffe"
 )
 
 const (
@@ -52,6 +61,10 @@ const (
 	// Gateway API group and version.
 	gatewayAPIGroup   = "gateway.networking.k8s.io"
 	gatewayAPIVersion = "v1"
+
+	// Envoy Gateway policy API group.
+	envoyGatewayGroup   = "gateway.envoyproxy.io"
+	envoyGatewayVersion = "v1alpha1"
 )
 
 var (
@@ -61,6 +74,7 @@ var (
 	gvkAIServiceBackend      = schema.GroupVersionKind{Group: envoyAIGatewayGroup, Version: envoyAIGatewayVersion, Kind: "AIServiceBackend"}
 	gvkBackendSecurityPolicy = schema.GroupVersionKind{Group: envoyAIGatewayGroup, Version: envoyAIGatewayVersion, Kind: "BackendSecurityPolicy"}
 	gvkAIGatewayRoute        = schema.GroupVersionKind{Group: envoyAIGatewayGroup, Version: envoyAIGatewayVersion, Kind: "AIGatewayRoute"}
+	gvkClientTrafficPolicy   = schema.GroupVersionKind{Group: envoyGatewayGroup, Version: envoyGatewayVersion, Kind: "ClientTrafficPolicy"}
 )
 
 // AIGatewayReconciler reconciles an AIGateway object.
@@ -77,7 +91,9 @@ type AIGatewayReconciler struct {
 // +kubebuilder:rbac:groups=aigateway.envoyproxy.io,resources=aiservicebackends,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=aigateway.envoyproxy.io,resources=backendsecuritypolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=aigateway.envoyproxy.io,resources=aigatewayroutes,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=clienttrafficpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AIGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	aiGatewayLogger.V(1).Info("Reconciling AIGateway", "namespacedName", req.NamespacedName)
@@ -117,6 +133,16 @@ func (r *AIGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
+	if aigw.Spec.MTLS != nil {
+		if err := r.reconcileMTLS(ctx, aigw); err != nil {
+			r.setCondition(ctx, aigw, "Ready", metav1.ConditionFalse, "MTLSFailed", err.Error())
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		}
+	} else {
+		// Clean up mTLS resources if mTLS was removed from spec.
+		r.cleanupMTLSResources(ctx, aigw)
+	}
+
 	// Update status.
 	if err := r.updateStatus(ctx, aigw); err != nil {
 		return ctrl.Result{}, err
@@ -138,11 +164,36 @@ func (r *AIGatewayReconciler) reconcileGateway(ctx context.Context, aigw *gatewa
 		if protocol == "" {
 			protocol = "HTTP"
 		}
-		listeners = append(listeners, map[string]interface{}{
+
+		// When mTLS is configured, switch listeners to HTTPS.
+		if aigw.Spec.MTLS != nil {
+			protocol = "HTTPS"
+		}
+
+		listener := map[string]interface{}{
 			"name":     l.Name,
 			"port":     int64(l.Port),
 			"protocol": protocol,
-		})
+		}
+
+		// Add TLS config for HTTPS listeners when mTLS is configured.
+		if aigw.Spec.MTLS != nil {
+			certSecretName := serverCertSecretName(aigw.Name)
+			if aigw.Spec.MTLS.ServerCertRef != nil {
+				certSecretName = aigw.Spec.MTLS.ServerCertRef.Name
+			}
+			listener["tls"] = map[string]interface{}{
+				"mode": "Terminate",
+				"certificateRefs": []interface{}{
+					map[string]interface{}{
+						"kind": "Secret",
+						"name": certSecretName,
+					},
+				},
+			}
+		}
+
+		listeners = append(listeners, listener)
 	}
 
 	desired := map[string]interface{}{
@@ -349,6 +400,226 @@ func (r *AIGatewayReconciler) createOrUpdate(ctx context.Context, aigw *gatewayv
 	return nil
 }
 
+// reconcileMTLS creates/updates the trust bundle Secret, server certificate, and ClientTrafficPolicy.
+func (r *AIGatewayReconciler) reconcileMTLS(ctx context.Context, aigw *gatewayv1alpha1.AIGateway) error {
+	mtls := aigw.Spec.MTLS
+
+	// 1. Sync trust bundle: read SPIFFE JSON ConfigMap → PEM Secret.
+	cm := &corev1.ConfigMap{}
+	cmKey := types.NamespacedName{
+		Name:      mtls.TrustBundleConfigMap.Name,
+		Namespace: mtls.TrustBundleConfigMap.Namespace,
+	}
+	if err := r.Get(ctx, cmKey, cm); err != nil {
+		return fmt.Errorf("failed to get trust bundle configmap %s/%s: %w",
+			cmKey.Namespace, cmKey.Name, err)
+	}
+
+	bundleKey := mtls.TrustBundleConfigMap.Key
+	if bundleKey == "" {
+		bundleKey = "bundle.spiffe"
+	}
+	raw, ok := cm.Data[bundleKey]
+	if !ok || raw == "" {
+		return fmt.Errorf("trust bundle configmap key %q not found or empty", bundleKey)
+	}
+
+	pemData, err := spiffe.ParseTrustBundleToPEM(raw)
+	if err != nil {
+		return fmt.Errorf("failed to convert trust bundle to PEM: %w", err)
+	}
+
+	caSecretName := caSecretName(aigw.Name)
+	caSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      caSecretName,
+			Namespace: aigw.Namespace,
+		},
+	}
+	if err := r.Get(ctx, types.NamespacedName{Name: caSecretName, Namespace: aigw.Namespace}, caSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		// Create the CA secret.
+		caSecret.Data = map[string][]byte{"ca.crt": pemData}
+		if err := controllerutil.SetOwnerReference(aigw, caSecret, r.Scheme); err != nil {
+			return fmt.Errorf("setting owner reference on CA secret: %w", err)
+		}
+		if err := r.Create(ctx, caSecret); err != nil {
+			return fmt.Errorf("creating CA secret: %w", err)
+		}
+		aiGatewayLogger.Info("Created mTLS CA secret", "name", caSecretName)
+	} else {
+		// Update if content changed.
+		caSecret.Data = map[string][]byte{"ca.crt": pemData}
+		if err := r.Update(ctx, caSecret); err != nil {
+			return fmt.Errorf("updating CA secret: %w", err)
+		}
+	}
+
+	// 2. Ensure server certificate.
+	if mtls.ServerCertRef == nil {
+		if err := r.ensureSelfSignedCert(ctx, aigw); err != nil {
+			return fmt.Errorf("ensuring self-signed server cert: %w", err)
+		}
+	}
+
+	// 3. Create/update ClientTrafficPolicy.
+	ctp := &unstructured.Unstructured{}
+	ctp.SetGroupVersionKind(gvkClientTrafficPolicy)
+	ctp.SetName(aigw.Name)
+	ctp.SetNamespace(aigw.Namespace)
+
+	desired := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"targetRefs": []interface{}{
+				map[string]interface{}{
+					"group": gatewayAPIGroup,
+					"kind":  "Gateway",
+					"name":  aigw.Name,
+				},
+			},
+			"tls": map[string]interface{}{
+				"clientValidation": map[string]interface{}{
+					"mode": "RequireAndVerify",
+					"caCertificateRefs": []interface{}{
+						map[string]interface{}{
+							"kind":  "Secret",
+							"group": "",
+							"name":  caSecretName,
+						},
+					},
+					"subjectAltNames": map[string]interface{}{
+						"uris": []interface{}{
+							map[string]interface{}{
+								"type":  "Prefix",
+								"value": fmt.Sprintf("spiffe://%s/", mtls.TrustDomain),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return r.createOrUpdate(ctx, aigw, ctp, desired)
+}
+
+// ensureSelfSignedCert creates a self-signed TLS certificate Secret for the Gateway
+// if one doesn't already exist.
+func (r *AIGatewayReconciler) ensureSelfSignedCert(ctx context.Context, aigw *gatewayv1alpha1.AIGateway) error {
+	secretName := serverCertSecretName(aigw.Name)
+	existing := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: aigw.Namespace}, existing)
+	if err == nil {
+		return nil // Already exists.
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	// Generate self-signed certificate.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generating private key: %w", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: fmt.Sprintf("%s.%s.svc", aigw.Name, aigw.Namespace),
+		},
+		DNSNames: []string{
+			aigw.Name,
+			fmt.Sprintf("%s.%s", aigw.Name, aigw.Namespace),
+			fmt.Sprintf("%s.%s.svc", aigw.Name, aigw.Namespace),
+		},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+		},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return fmt.Errorf("creating self-signed certificate: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("marshaling private key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: aigw.Namespace,
+		},
+		Type: corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			"tls.crt": certPEM,
+			"tls.key": keyPEM,
+		},
+	}
+	if err := controllerutil.SetOwnerReference(aigw, secret, r.Scheme); err != nil {
+		return fmt.Errorf("setting owner reference on server cert secret: %w", err)
+	}
+	if err := r.Create(ctx, secret); err != nil {
+		return fmt.Errorf("creating server cert secret: %w", err)
+	}
+	aiGatewayLogger.Info("Created self-signed server certificate", "name", secretName)
+	return nil
+}
+
+// cleanupMTLSResources removes mTLS-related resources (CA Secret, server cert Secret,
+// ClientTrafficPolicy) when mTLS is removed from the spec.
+func (r *AIGatewayReconciler) cleanupMTLSResources(ctx context.Context, aigw *gatewayv1alpha1.AIGateway) {
+	// Delete ClientTrafficPolicy.
+	ctp := &unstructured.Unstructured{}
+	ctp.SetGroupVersionKind(gvkClientTrafficPolicy)
+	ctp.SetName(aigw.Name)
+	ctp.SetNamespace(aigw.Namespace)
+	if err := r.Delete(ctx, ctp); err != nil && !apierrors.IsNotFound(err) {
+		aiGatewayLogger.Error(err, "Failed to delete ClientTrafficPolicy", "name", aigw.Name)
+	}
+
+	// Delete CA Secret.
+	caSecret := &corev1.Secret{}
+	caName := caSecretName(aigw.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: caName, Namespace: aigw.Namespace}, caSecret); err == nil {
+		if isOwnedByAIGateway(caSecret, aigw) {
+			if err := r.Delete(ctx, caSecret); err != nil && !apierrors.IsNotFound(err) {
+				aiGatewayLogger.Error(err, "Failed to delete CA secret", "name", caName)
+			}
+		}
+	}
+
+	// Delete self-signed server cert Secret.
+	serverSecret := &corev1.Secret{}
+	serverName := serverCertSecretName(aigw.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: serverName, Namespace: aigw.Namespace}, serverSecret); err == nil {
+		if isOwnedByAIGateway(serverSecret, aigw) {
+			if err := r.Delete(ctx, serverSecret); err != nil && !apierrors.IsNotFound(err) {
+				aiGatewayLogger.Error(err, "Failed to delete server cert secret", "name", serverName)
+			}
+		}
+	}
+}
+
+// isOwnedByAIGateway checks whether a typed resource has an owner reference to the given AIGateway.
+func isOwnedByAIGateway(obj client.Object, aigw *gatewayv1alpha1.AIGateway) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == aigw.UID {
+			return true
+		}
+	}
+	return false
+}
+
 // cleanupRemovedProviders removes AIServiceBackend and BackendSecurityPolicy resources
 // for providers that are no longer in the spec.
 func (r *AIGatewayReconciler) cleanupRemovedProviders(ctx context.Context, aigw *gatewayv1alpha1.AIGateway) error {
@@ -527,7 +798,11 @@ func (r *AIGatewayReconciler) computeEndpoint(aigw *gatewayv1alpha1.AIGateway) s
 	if len(aigw.Spec.Listeners) > 0 {
 		port = aigw.Spec.Listeners[0].Port
 	}
-	return fmt.Sprintf("http://%s.%s.svc:%d", aigw.Name, aigw.Namespace, port)
+	scheme := "http"
+	if aigw.Spec.MTLS != nil {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s.%s.svc:%d", scheme, aigw.Name, aigw.Namespace, port)
 }
 
 // handleDeletion removes the finalizer after owned resources are garbage collected.
@@ -585,7 +860,7 @@ func (r *AIGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&gatewayv1alpha1.AIGateway{})
 
 	// Watch owned unstructured resources to react to their status changes.
-	for _, gvk := range []schema.GroupVersionKind{gvkGateway, gvkAIServiceBackend, gvkAIGatewayRoute, gvkBackendSecurityPolicy} {
+	for _, gvk := range []schema.GroupVersionKind{gvkGateway, gvkAIServiceBackend, gvkAIGatewayRoute, gvkBackendSecurityPolicy, gvkClientTrafficPolicy} {
 		u := &unstructured.Unstructured{}
 		u.SetGroupVersionKind(gvk)
 		b = b.WatchesRawSource(source.Kind(mgr.GetCache(), u, handler.TypedEnqueueRequestForOwner[*unstructured.Unstructured](
@@ -604,6 +879,14 @@ func backendName(aigwName, providerName string) string {
 
 func policyName(aigwName, providerName string) string {
 	return aigwName + "-" + providerName + "-credentials"
+}
+
+func caSecretName(aigwName string) string {
+	return aigwName + "-mtls-ca"
+}
+
+func serverCertSecretName(aigwName string) string {
+	return aigwName + "-mtls-server"
 }
 
 // isOwnedBy checks whether an unstructured resource has an owner reference to the given AIGateway.
