@@ -37,6 +37,12 @@ type AIGatewaySpec struct {
 	// Service configures the generated Gateway service.
 	// +optional
 	Service *AIGatewayService `json:"service,omitempty"`
+
+	// MTLS configures mutual TLS access control for the gateway.
+	// When set, only clients presenting a valid X.509-SVID from the
+	// configured SPIRE trust domain are allowed to connect.
+	// +optional
+	MTLS *AIGatewayMTLS `json:"mtls,omitempty"`
 }
 
 // AIGatewayListener defines a listener on the Gateway.
@@ -100,6 +106,47 @@ type AIGatewayService struct {
 	// +kubebuilder:default=ClusterIP
 	// +optional
 	Type string `json:"type,omitempty"`
+}
+
+// AIGatewayMTLS configures mutual TLS access control using SPIRE SVIDs.
+type AIGatewayMTLS struct {
+	// TrustDomain is the SPIRE trust domain (e.g. "example.org").
+	// Only SVIDs with spiffe://<trustDomain>/... URI SANs are accepted.
+	// +kubebuilder:validation:MinLength=1
+	TrustDomain string `json:"trustDomain"`
+
+	// TrustBundleConfigMap references the ConfigMap containing the SPIRE
+	// trust bundle in SPIFFE JSON format.
+	TrustBundleConfigMap TrustBundleRef `json:"trustBundleConfigMap"`
+
+	// ServerCertRef optionally references a Secret containing the gateway's
+	// TLS serving certificate (tls.crt + tls.key). If omitted, the
+	// controller generates a self-signed certificate.
+	// +optional
+	ServerCertRef *CertificateReference `json:"serverCertRef,omitempty"`
+}
+
+// TrustBundleRef references a ConfigMap containing a SPIFFE trust bundle.
+type TrustBundleRef struct {
+	// Name of the ConfigMap.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Namespace of the ConfigMap.
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace"`
+
+	// Key within the ConfigMap containing the SPIFFE JSON bundle.
+	// +kubebuilder:default="bundle.spiffe"
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// CertificateReference references a Secret containing TLS certificates.
+type CertificateReference struct {
+	// Name is the Secret name containing tls.crt and tls.key.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // AIGatewayStatus defines the observed state of AIGateway.

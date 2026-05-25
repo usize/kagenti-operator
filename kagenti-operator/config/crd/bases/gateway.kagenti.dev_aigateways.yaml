@@ -151,6 +151,57 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              mtls:
+                description: |-
+                  MTLS configures mutual TLS access control for the gateway.
+                  When set, only clients presenting a valid X.509-SVID from the
+                  configured SPIRE trust domain are allowed to connect.
+                properties:
+                  serverCertRef:
+                    description: |-
+                      ServerCertRef optionally references a Secret containing the gateway's
+                      TLS serving certificate (tls.crt + tls.key). If omitted, the
+                      controller generates a self-signed certificate.
+                    properties:
+                      name:
+                        description: Name is the Secret name containing tls.crt and tls.key.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  trustBundleConfigMap:
+                    description: |-
+                      TrustBundleConfigMap references the ConfigMap containing the SPIRE
+                      trust bundle in SPIFFE JSON format.
+                    properties:
+                      key:
+                        default: bundle.spiffe
+                        description: Key within the ConfigMap containing the SPIFFE JSON
+                          bundle.
+                        type: string
+                      name:
+                        description: Name of the ConfigMap.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the ConfigMap.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  trustDomain:
+                    description: |-
+                      TrustDomain is the SPIRE trust domain (e.g. "example.org").
+                      Only SVIDs with spiffe://<trustDomain>/... URI SANs are accepted.
+                    minLength: 1
+                    type: string
+                required:
+                - trustBundleConfigMap
+                - trustDomain
+                type: object
               service:
                 description: Service configures the generated Gateway service.
                 properties:
