@@ -740,6 +740,10 @@ var _ = Describe("AIGateway Controller", func() {
 			Expect(ref["kind"]).To(Equal("Gateway"))
 			Expect(ref["name"]).To(Equal(aigwName))
 
+			By("checking ClientTrafficPolicy client validation mode")
+			mode, _, _ := unstructured.NestedString(ctp.Object, "spec", "tls", "clientValidation", "mode")
+			Expect(mode).To(Equal("RequireAndVerify"))
+
 			By("checking ClientTrafficPolicy CA ref")
 			caRefs, _, _ := unstructured.NestedSlice(ctp.Object, "spec", "tls", "clientValidation", "caCertificateRefs")
 			Expect(caRefs).To(HaveLen(1))
@@ -761,6 +765,12 @@ var _ = Describe("AIGateway Controller", func() {
 			Expect(serverSecret.Type).To(Equal(corev1.SecretTypeTLS))
 			Expect(serverSecret.Data).To(HaveKey("tls.crt"))
 			Expect(serverSecret.Data).To(HaveKey("tls.key"))
+
+			By("verifying owner reference on the server cert Secret")
+			ownerRefs := serverSecret.GetOwnerReferences()
+			Expect(ownerRefs).To(HaveLen(1))
+			Expect(ownerRefs[0].Kind).To(Equal("AIGateway"))
+			Expect(ownerRefs[0].Name).To(Equal(aigwName))
 
 			By("verifying the Gateway listener is HTTPS")
 			gw := &unstructured.Unstructured{}
@@ -918,6 +928,254 @@ var _ = Describe("AIGateway Controller", func() {
 
 			By("cleaning up trust bundle ConfigMap")
 			deleteTrustBundleConfigMap(ctx, "spire-bundle-4", "spire-system")
+		})
+	})
+
+	Context("mTLS failure modes", func() {
+		It("should set Ready=False with MTLSFailed when trust bundle ConfigMap is missing", func() {
+			By("creating an AIGateway referencing a non-existent ConfigMap")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "nonexistent-bundle",
+					Namespace: "nonexistent-ns",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			// First reconcile adds finalizer.
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile attempts mTLS setup.
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).To(HaveOccurred())
+
+			By("verifying Ready condition is False with MTLSFailed reason")
+			Eventually(func(g Gomega) {
+				updated := &gatewayv1alpha1.AIGateway{}
+				g.Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
+				readyCond := findCondition(updated.Status.Conditions, "Ready")
+				g.Expect(readyCond).NotTo(BeNil())
+				g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(readyCond.Reason).To(Equal("MTLSFailed"))
+				g.Expect(readyCond.Message).To(ContainSubstring("trust bundle configmap"))
+			}, testTimeout, testInterval).Should(Succeed())
+		})
+
+		It("should set Ready=False when trust bundle ConfigMap key is missing", func() {
+			By("creating a ConfigMap without the expected key")
+			ensureNamespace(ctx, "spire-system")
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bad-key-bundle",
+					Namespace: "spire-system",
+				},
+				Data: map[string]string{
+					"wrong-key": "some data",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "bad-key-bundle",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).To(HaveOccurred())
+
+			By("verifying the error mentions the missing key")
+			Eventually(func(g Gomega) {
+				updated := &gatewayv1alpha1.AIGateway{}
+				g.Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
+				readyCond := findCondition(updated.Status.Conditions, "Ready")
+				g.Expect(readyCond).NotTo(BeNil())
+				g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(readyCond.Reason).To(Equal("MTLSFailed"))
+			}, testTimeout, testInterval).Should(Succeed())
+
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		It("should set Ready=False when trust bundle contains invalid JSON", func() {
+			By("creating a ConfigMap with invalid JSON")
+			ensureNamespace(ctx, "spire-system")
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-json-bundle",
+					Namespace: "spire-system",
+				},
+				Data: map[string]string{
+					"bundle.spiffe": "not valid json",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "invalid-json-bundle",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).To(HaveOccurred())
+
+			By("verifying Ready condition is False with MTLSFailed")
+			Eventually(func(g Gomega) {
+				updated := &gatewayv1alpha1.AIGateway{}
+				g.Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
+				readyCond := findCondition(updated.Status.Conditions, "Ready")
+				g.Expect(readyCond).NotTo(BeNil())
+				g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(readyCond.Reason).To(Equal("MTLSFailed"))
+			}, testTimeout, testInterval).Should(Succeed())
+
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		It("should set Ready=False when trust bundle has no x509-svid certificates", func() {
+			By("creating a ConfigMap with empty keys array")
+			ensureNamespace(ctx, "spire-system")
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-certs-bundle",
+					Namespace: "spire-system",
+				},
+				Data: map[string]string{
+					"bundle.spiffe": `{"keys":[]}`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "empty-certs-bundle",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).To(HaveOccurred())
+
+			By("verifying Ready condition mentions no certificates")
+			Eventually(func(g Gomega) {
+				updated := &gatewayv1alpha1.AIGateway{}
+				g.Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
+				readyCond := findCondition(updated.Status.Conditions, "Ready")
+				g.Expect(readyCond).NotTo(BeNil())
+				g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(readyCond.Reason).To(Equal("MTLSFailed"))
+			}, testTimeout, testInterval).Should(Succeed())
+
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		It("should use custom trustBundleConfigMap.key when specified", func() {
+			By("creating a ConfigMap with a custom key")
+			ensureNamespace(ctx, "spire-system")
+			caDER := generateTestCACert()
+			bundleJSON := makeSPIFFEBundle(caDER)
+
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "custom-key-bundle",
+					Namespace: "spire-system",
+				},
+				Data: map[string]string{
+					"my-custom-key": bundleJSON,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "custom-key-bundle",
+					Namespace: "spire-system",
+					Key:       "my-custom-key",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying CA Secret was created successfully")
+			caSecret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)).To(Succeed())
+			Expect(string(caSecret.Data["ca.crt"])).To(ContainSubstring("BEGIN CERTIFICATE"))
+
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		It("should transition Gateway listeners from HTTPS back to HTTP when mTLS is removed", func() {
+			By("creating the trust bundle ConfigMap")
+			createTrustBundleConfigMap(ctx, "spire-bundle-5", "spire-system")
+
+			By("creating an AIGateway with mTLS and reconciling")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "spire-bundle-5",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying Gateway listener is HTTPS")
+			gw := &unstructured.Unstructured{}
+			gw.SetGroupVersionKind(gvkGateway)
+			Expect(k8sClient.Get(ctx, namespacedName, gw)).To(Succeed())
+			listeners, _, _ := unstructured.NestedSlice(gw.Object, "spec", "listeners")
+			l := listeners[0].(map[string]interface{})
+			Expect(l["protocol"]).To(Equal("HTTPS"))
+			Expect(l).To(HaveKey("tls"))
+
+			By("removing mTLS from the spec")
+			current := &gatewayv1alpha1.AIGateway{}
+			Expect(k8sClient.Get(ctx, namespacedName, current)).To(Succeed())
+			current.Spec.MTLS = nil
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+
+			By("reconciling to apply changes")
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying Gateway listener switched back to HTTP")
+			Expect(k8sClient.Get(ctx, namespacedName, gw)).To(Succeed())
+			listeners, _, _ = unstructured.NestedSlice(gw.Object, "spec", "listeners")
+			l = listeners[0].(map[string]interface{})
+			Expect(l["protocol"]).To(Equal("HTTP"))
+
+			By("cleaning up trust bundle ConfigMap")
+			deleteTrustBundleConfigMap(ctx, "spire-bundle-5", "spire-system")
 		})
 	})
 })

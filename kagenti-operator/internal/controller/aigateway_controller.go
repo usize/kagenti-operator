@@ -583,7 +583,7 @@ func (r *AIGatewayReconciler) cleanupMTLSResources(ctx context.Context, aigw *ga
 	ctp.SetGroupVersionKind(gvkClientTrafficPolicy)
 	ctp.SetName(aigw.Name)
 	ctp.SetNamespace(aigw.Namespace)
-	if err := r.Delete(ctx, ctp); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Delete(ctx, ctp); err != nil && !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
 		aiGatewayLogger.Error(err, "Failed to delete ClientTrafficPolicy", "name", aigw.Name)
 	}
 
