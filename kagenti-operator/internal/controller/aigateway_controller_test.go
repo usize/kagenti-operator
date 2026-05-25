@@ -18,10 +18,19 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -53,8 +62,16 @@ func cleanupAIGateway(ctx context.Context, name, namespace string) {
 		}, testTimeout, testInterval).Should(BeTrue())
 	}
 
+	// Clean up secrets created by mTLS.
+	for _, secretName := range []string{name + "-mtls-ca", name + "-mtls-server"} {
+		secret := &corev1.Secret{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err == nil {
+			_ = k8sClient.Delete(ctx, secret)
+		}
+	}
+
 	// Clean up all unstructured resources.
-	for _, gvk := range []schema.GroupVersionKind{gvkGateway, gvkAIServiceBackend, gvkBackendSecurityPolicy, gvkAIGatewayRoute} {
+	for _, gvk := range []schema.GroupVersionKind{gvkGateway, gvkAIServiceBackend, gvkBackendSecurityPolicy, gvkAIGatewayRoute, gvkClientTrafficPolicy} {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(schema.GroupVersionKind{
 			Group:   gvk.Group,
@@ -658,6 +675,251 @@ var _ = Describe("AIGateway Controller", func() {
 			Expect(header["value"]).To(Equal("gpt-4o-2024-11-20"))
 		})
 	})
+
+	Context("mTLS reconciliation", func() {
+		It("should not create ClientTrafficPolicy or CA Secret when mtls is nil", func() {
+			By("creating an AIGateway without mTLS and reconciling")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = nil
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying no ClientTrafficPolicy exists")
+			ctp := &unstructured.Unstructured{}
+			ctp.SetGroupVersionKind(gvkClientTrafficPolicy)
+			err = k8sClient.Get(ctx, namespacedName, ctp)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			By("verifying no CA Secret exists")
+			caSecret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should create trust bundle Secret, ClientTrafficPolicy, and server cert when mtls is set", func() {
+			By("creating the trust bundle ConfigMap")
+			createTrustBundleConfigMap(ctx, "spire-bundle", "spire-system")
+
+			By("creating an AIGateway with mTLS and reconciling")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "spire-bundle",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the CA Secret was created with PEM content")
+			caSecret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)).To(Succeed())
+			Expect(caSecret.Data).To(HaveKey("ca.crt"))
+			Expect(string(caSecret.Data["ca.crt"])).To(ContainSubstring("BEGIN CERTIFICATE"))
+
+			By("verifying the ClientTrafficPolicy was created")
+			ctp := &unstructured.Unstructured{}
+			ctp.SetGroupVersionKind(gvkClientTrafficPolicy)
+			Expect(k8sClient.Get(ctx, namespacedName, ctp)).To(Succeed())
+
+			By("checking ClientTrafficPolicy targetRef")
+			targetRefs, _, _ := unstructured.NestedSlice(ctp.Object, "spec", "targetRefs")
+			Expect(targetRefs).To(HaveLen(1))
+			ref := targetRefs[0].(map[string]interface{})
+			Expect(ref["kind"]).To(Equal("Gateway"))
+			Expect(ref["name"]).To(Equal(aigwName))
+
+			By("checking ClientTrafficPolicy CA ref")
+			caRefs, _, _ := unstructured.NestedSlice(ctp.Object, "spec", "tls", "clientValidation", "caCertificateRefs")
+			Expect(caRefs).To(HaveLen(1))
+			caRef := caRefs[0].(map[string]interface{})
+			Expect(caRef["name"]).To(Equal(aigwName + "-mtls-ca"))
+
+			By("checking ClientTrafficPolicy URI prefix")
+			uris, _, _ := unstructured.NestedSlice(ctp.Object, "spec", "tls", "clientValidation", "subjectAltNames", "uris")
+			Expect(uris).To(HaveLen(1))
+			uri := uris[0].(map[string]interface{})
+			Expect(uri["type"]).To(Equal("Prefix"))
+			Expect(uri["value"]).To(Equal("spiffe://example.org/"))
+
+			By("verifying the self-signed server cert Secret was created")
+			serverSecret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-server", Namespace: namespace,
+			}, serverSecret)).To(Succeed())
+			Expect(serverSecret.Type).To(Equal(corev1.SecretTypeTLS))
+			Expect(serverSecret.Data).To(HaveKey("tls.crt"))
+			Expect(serverSecret.Data).To(HaveKey("tls.key"))
+
+			By("verifying the Gateway listener is HTTPS")
+			gw := &unstructured.Unstructured{}
+			gw.SetGroupVersionKind(gvkGateway)
+			Expect(k8sClient.Get(ctx, namespacedName, gw)).To(Succeed())
+			listeners, _, _ := unstructured.NestedSlice(gw.Object, "spec", "listeners")
+			Expect(listeners).To(HaveLen(1))
+			l := listeners[0].(map[string]interface{})
+			Expect(l["protocol"]).To(Equal("HTTPS"))
+
+			By("cleaning up trust bundle ConfigMap")
+			deleteTrustBundleConfigMap(ctx, "spire-bundle", "spire-system")
+		})
+
+		It("should use serverCertRef when provided instead of generating self-signed cert", func() {
+			By("creating the trust bundle ConfigMap")
+			createTrustBundleConfigMap(ctx, "spire-bundle-2", "spire-system")
+
+			By("creating an AIGateway with mTLS and serverCertRef")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "spire-bundle-2",
+					Namespace: "spire-system",
+				},
+				ServerCertRef: &gatewayv1alpha1.CertificateReference{Name: "my-tls-cert"},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying no self-signed server cert was created")
+			serverSecret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-server", Namespace: namespace,
+			}, serverSecret)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			By("verifying Gateway references the user-provided cert")
+			gw := &unstructured.Unstructured{}
+			gw.SetGroupVersionKind(gvkGateway)
+			Expect(k8sClient.Get(ctx, namespacedName, gw)).To(Succeed())
+			listeners, _, _ := unstructured.NestedSlice(gw.Object, "spec", "listeners")
+			l := listeners[0].(map[string]interface{})
+			tls := l["tls"].(map[string]interface{})
+			certRefs := tls["certificateRefs"].([]interface{})
+			certRef := certRefs[0].(map[string]interface{})
+			Expect(certRef["name"]).To(Equal("my-tls-cert"))
+
+			By("cleaning up trust bundle ConfigMap")
+			deleteTrustBundleConfigMap(ctx, "spire-bundle-2", "spire-system")
+		})
+
+		It("should update trust bundle Secret when ConfigMap content changes", func() {
+			By("creating the trust bundle ConfigMap")
+			createTrustBundleConfigMap(ctx, "spire-bundle-3", "spire-system")
+
+			By("creating an AIGateway with mTLS and reconciling")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "spire-bundle-3",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("recording original CA secret content")
+			caSecret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)).To(Succeed())
+			originalCA := string(caSecret.Data["ca.crt"])
+
+			By("updating the trust bundle ConfigMap with a new cert")
+			updateTrustBundleConfigMap(ctx, "spire-bundle-3", "spire-system")
+
+			By("reconciling to pick up the change")
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the CA Secret content changed")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)).To(Succeed())
+			Expect(string(caSecret.Data["ca.crt"])).NotTo(Equal(originalCA))
+
+			By("cleaning up trust bundle ConfigMap")
+			deleteTrustBundleConfigMap(ctx, "spire-bundle-3", "spire-system")
+		})
+
+		It("should clean up mTLS resources when mTLS is removed from spec", func() {
+			By("creating the trust bundle ConfigMap")
+			createTrustBundleConfigMap(ctx, "spire-bundle-4", "spire-system")
+
+			By("creating an AIGateway with mTLS and reconciling")
+			aigw := validAIGateway(aigwName)
+			aigw.Spec.MTLS = &gatewayv1alpha1.AIGatewayMTLS{
+				TrustDomain: "example.org",
+				TrustBundleConfigMap: gatewayv1alpha1.TrustBundleRef{
+					Name:      "spire-bundle-4",
+					Namespace: "spire-system",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aigw)).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileN(r, ctx, namespacedName, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying mTLS resources exist")
+			ctp := &unstructured.Unstructured{}
+			ctp.SetGroupVersionKind(gvkClientTrafficPolicy)
+			Expect(k8sClient.Get(ctx, namespacedName, ctp)).To(Succeed())
+
+			caSecret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)).To(Succeed())
+
+			By("removing mTLS from the spec")
+			current := &gatewayv1alpha1.AIGateway{}
+			Expect(k8sClient.Get(ctx, namespacedName, current)).To(Succeed())
+			current.Spec.MTLS = nil
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+
+			By("reconciling to trigger cleanup")
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying ClientTrafficPolicy was cleaned up")
+			err = k8sClient.Get(ctx, namespacedName, ctp)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			By("verifying CA Secret was cleaned up")
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-ca", Namespace: namespace,
+			}, caSecret)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			By("verifying server cert Secret was cleaned up")
+			serverSecret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: aigwName + "-mtls-server", Namespace: namespace,
+			}, serverSecret)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			By("cleaning up trust bundle ConfigMap")
+			deleteTrustBundleConfigMap(ctx, "spire-bundle-4", "spire-system")
+		})
+	})
 })
 
 // Unit tests for helper functions, following the pattern from agentcard_controller_test.go
@@ -698,6 +960,22 @@ var _ = Describe("computeEndpoint", func() {
 			Spec:       gatewayv1alpha1.AIGatewaySpec{},
 		}
 		Expect(r.computeEndpoint(aigw)).To(Equal("http://ai-gw.default.svc:8080"))
+	})
+
+	It("should use https scheme when mTLS is configured", func() {
+		r := &AIGatewayReconciler{}
+		aigw := &gatewayv1alpha1.AIGateway{
+			ObjectMeta: metav1.ObjectMeta{Name: "ai-gw", Namespace: "prod"},
+			Spec: gatewayv1alpha1.AIGatewaySpec{
+				Listeners: []gatewayv1alpha1.AIGatewayListener{
+					{Name: "https", Port: 8443},
+				},
+				MTLS: &gatewayv1alpha1.AIGatewayMTLS{
+					TrustDomain: "example.org",
+				},
+			},
+		}
+		Expect(r.computeEndpoint(aigw)).To(Equal("https://ai-gw.prod.svc:8443"))
 	})
 })
 
@@ -816,3 +1094,102 @@ var _ = Describe("isGatewayReady", func() {
 		_ = k8sClient.Delete(ctx, gw)
 	})
 })
+
+var _ = Describe("caSecretName", func() {
+	It("should append -mtls-ca suffix", func() {
+		Expect(caSecretName("my-gateway")).To(Equal("my-gateway-mtls-ca"))
+	})
+})
+
+var _ = Describe("serverCertSecretName", func() {
+	It("should append -mtls-server suffix", func() {
+		Expect(serverCertSecretName("my-gateway")).To(Equal("my-gateway-mtls-server"))
+	})
+})
+
+// Test helpers for creating SPIFFE trust bundle ConfigMaps.
+
+func generateTestCACert() []byte {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "Test CA"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		IsCA:         true,
+		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return der
+}
+
+func makeSPIFFEBundle(certDERs ...[]byte) string {
+	type bundleKey struct {
+		Use string   `json:"use"`
+		X5C []string `json:"x5c"`
+	}
+	type bundle struct {
+		Keys []bundleKey `json:"keys"`
+	}
+
+	x5c := make([]string, len(certDERs))
+	for i, der := range certDERs {
+		x5c[i] = base64.StdEncoding.EncodeToString(der)
+	}
+
+	b := bundle{Keys: []bundleKey{{Use: "x509-svid", X5C: x5c}}}
+	data, _ := json.Marshal(b)
+	return string(data)
+}
+
+func ensureNamespace(ctx context.Context, name string) {
+	ns := &corev1.Namespace{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, ns); err != nil {
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		}
+		ExpectWithOffset(1, k8sClient.Create(ctx, ns)).To(Succeed())
+	}
+}
+
+func createTrustBundleConfigMap(ctx context.Context, name, namespace string) {
+	ensureNamespace(ctx, namespace)
+	caDER := generateTestCACert()
+	bundleJSON := makeSPIFFEBundle(caDER)
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Data: map[string]string{
+			"bundle.spiffe": bundleJSON,
+		},
+	}
+	ExpectWithOffset(1, k8sClient.Create(ctx, cm)).To(Succeed())
+}
+
+func updateTrustBundleConfigMap(ctx context.Context, name, namespace string) {
+	cm := &corev1.ConfigMap{}
+	ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cm)).To(Succeed())
+
+	// Generate a new CA cert so the bundle content is different.
+	newCaDER := generateTestCACert()
+	cm.Data["bundle.spiffe"] = makeSPIFFEBundle(newCaDER)
+	ExpectWithOffset(1, k8sClient.Update(ctx, cm)).To(Succeed())
+}
+
+func deleteTrustBundleConfigMap(ctx context.Context, name, namespace string) {
+	cm := &corev1.ConfigMap{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cm); err == nil {
+		_ = k8sClient.Delete(ctx, cm)
+	}
+}
+
+// findCondition is also defined in agentcard_controller_test.go in the same package.
+// Since Go test files in the same package share a single compilation unit, we don't
+// redefine it here. The function is available from that file.
