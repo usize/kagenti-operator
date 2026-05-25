@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	gatewayv1alpha1 "github.com/kagenti/operator/api/gateway/v1alpha1"
@@ -152,9 +153,6 @@ func TestAcceptsValidAIGateway(t *testing.T) {
 
 	_, err := v.ValidateCreate(context.Background(), aigw)
 	g.Expect(err).NotTo(HaveOccurred())
-
-	_, err = v.ValidateUpdate(context.Background(), aigw, aigw)
-	g.Expect(err).NotTo(HaveOccurred())
 }
 
 func TestAcceptsProviderWithoutCredentialRef(t *testing.T) {
@@ -174,4 +172,86 @@ func TestValidateDeleteReturnsNil(t *testing.T) {
 
 	_, err := v.ValidateDelete(context.Background(), aigw)
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidateUpdateRejectsInvalidNewObject(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	oldObj := validAIGatewayForTest()
+	newObj := validAIGatewayForTest()
+	newObj.Spec.GatewayClassName = ""
+
+	_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("gatewayClassName is required"))
+}
+
+func TestValidateUpdateAcceptsValidChange(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	oldObj := validAIGatewayForTest()
+	newObj := validAIGatewayForTest()
+	newObj.Spec.Providers[0].Models = append(newObj.Spec.Providers[0].Models, "gpt-4o-mini")
+
+	_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestAcceptsAllValidSchemas(t *testing.T) {
+	schemas := []string{"OpenAI", "Anthropic", "AWSBedrock", "AzureOpenAI", "GoogleGenAI"}
+	for _, schema := range schemas {
+		t.Run(schema, func(t *testing.T) {
+			g := NewWithT(t)
+			v := &AIGatewayValidator{}
+			aigw := validAIGatewayForTest()
+			aigw.Spec.Providers[0].Schema = schema
+
+			_, err := v.ValidateCreate(context.Background(), aigw)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+func TestCollectsMultipleValidationErrors(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+	aigw := validAIGatewayForTest()
+	aigw.Spec.GatewayClassName = ""
+	aigw.Spec.Listeners = nil
+	aigw.Spec.Providers = nil
+
+	_, err := v.ValidateCreate(context.Background(), aigw)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("gatewayClassName is required"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one listener is required"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one provider is required"))
+}
+
+func TestCreateRejectsWrongType(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+
+	// Pass a non-AIGateway object.
+	_, err := v.ValidateCreate(context.Background(), &corev1.Pod{})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("expected an AIGateway"))
+}
+
+func TestUpdateRejectsWrongType(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+
+	aigw := validAIGatewayForTest()
+	_, err := v.ValidateUpdate(context.Background(), aigw, &corev1.Pod{})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("expected an AIGateway"))
+}
+
+func TestDeleteRejectsWrongType(t *testing.T) {
+	g := NewWithT(t)
+	v := &AIGatewayValidator{}
+
+	_, err := v.ValidateDelete(context.Background(), &corev1.Pod{})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("expected an AIGateway"))
 }
