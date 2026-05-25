@@ -287,12 +287,13 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("aigateway-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "AIGateway")
-		os.Exit(1)
-	}
-	if err = webhookv1alpha1.SetupAIGatewayWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "AIGateway")
-		os.Exit(1)
+		setupLog.Info("AIGateway controller not started (Envoy AI Gateway CRDs may not be installed)",
+			"error", err)
+	} else {
+		if err = webhookv1alpha1.SetupAIGatewayWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AIGateway")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
