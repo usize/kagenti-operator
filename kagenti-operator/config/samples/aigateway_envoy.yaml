@@ -22,3 +22,16 @@ spec:
       schema: OpenAI
       models:
         - llama-3
+  # Uncomment to enable SPIRE mTLS access control.
+  # When set, only pods presenting a valid X.509-SVID from the configured
+  # trust domain can connect to the gateway.
+  # mtls:
+  #   trustDomain: example.org
+  #   trustBundleConfigMap:
+  #     name: spire-bundle
+  #     namespace: spire-system
+  #     key: bundle.spiffe
+  #   # Optional: reference a user-provided TLS serving certificate.
+  #   # If omitted, the controller generates a self-signed certificate.
+  #   # serverCertRef:
+  #   #   name: my-tls-cert

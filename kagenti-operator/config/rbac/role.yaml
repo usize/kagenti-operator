@@ -8,7 +8,25 @@ rules:
   - ""
   resources:
   - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - services
   verbs:
   - get
@@ -70,6 +88,18 @@ rules:
   - deployments
   - statefulsets
   verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - clienttrafficpolicies
+  verbs:
+  - create
+  - delete
   - get
   - list
   - patch
