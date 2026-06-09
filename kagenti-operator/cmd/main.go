@@ -46,6 +46,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	aigatewayv1alpha1 "github.com/kagenti/operator/api/aigateway/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/bootstrap"
 	"github.com/kagenti/operator/internal/controller"
@@ -71,6 +72,7 @@ func init() {
 	utilruntime.Must(mlflow.AddToScheme(scheme))
 	utilruntime.Must(tekton.AddToScheme(scheme))
 	utilruntime.Must(cmv1.AddToScheme(scheme))
+	utilruntime.Must(aigatewayv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
