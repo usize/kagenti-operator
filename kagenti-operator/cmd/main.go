@@ -45,6 +45,9 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
+	aigwv1a1 "github.com/envoyproxy/ai-gateway/api/v1alpha1"
+	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
+
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	aigatewayv1alpha1 "github.com/kagenti/operator/api/aigateway/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
@@ -73,6 +76,8 @@ func init() {
 	utilruntime.Must(tekton.AddToScheme(scheme))
 	utilruntime.Must(cmv1.AddToScheme(scheme))
 	utilruntime.Must(aigatewayv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(egv1a1.AddToScheme(scheme))
+	utilruntime.Must(aigwv1a1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -107,6 +112,7 @@ func main() {
 	var enforceNetworkPolicies bool
 	var enableMLflow bool
 	var enableOtelBootstrap bool
+	var enableAIGateway bool
 
 	var enableCardDiscovery bool
 
@@ -160,6 +166,8 @@ func main() {
 		"Enable MLflow experiment tracking integration")
 	flag.BoolVar(&enableOtelBootstrap, "enable-otel-bootstrap", false,
 		"Enable OTel collector bootstrap (ingress CA trust and ConfigMap assembly) at startup")
+	flag.BoolVar(&enableAIGateway, "enable-ai-gateway", false,
+		"Enable AI Gateway controllers (AIRoutingPolicy, AIAccessPolicy)")
 
 	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", false,
 		"Enable automatic agent card discovery from AgentRuntime workloads into status.card")
@@ -528,6 +536,18 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("MLflow UI config bootstrap enabled")
+	}
+
+	if enableAIGateway {
+		if err = (&controller.AIRoutingPolicyReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("airoutingpolicy-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AIRoutingPolicy")
+			os.Exit(1)
+		}
+		setupLog.Info("AI Gateway routing controller enabled")
 	}
 
 	if enableClientRegistration {
