@@ -31,6 +31,9 @@ spec:
             {{- range .Values.controllerManager.container.args }}
             - {{ . }}
             {{- end }}
+            {{- if .Values.aiGateway.enable }}
+            - "--enable-ai-gateway=true"
+            {{- end }}
             {{- if .Values.mlflow.enable }}
             - "--enable-mlflow=true"
             {{- end }}

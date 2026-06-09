@@ -110,6 +110,13 @@ authbridgeConfig:
   # How long AuthBridge waits for Keycloak credentials (increase for slow Keycloak startup)
   # credentialWaitTimeout: "120s"
 
+# [AI GATEWAY]: AI Gateway controllers (AIRoutingPolicy, AIAccessPolicy)
+# When enabled, the operator watches AIRoutingPolicy and AIAccessPolicy CRs
+# and generates Envoy AI Gateway resources for LLM routing and mTLS access control.
+# Requires Envoy Gateway + AI Gateway CRDs to be installed on the cluster.
+aiGateway:
+  enable: false
+
 # [MLFLOW]: MLflow experiment tracking integration
 mlflow:
   enable: false

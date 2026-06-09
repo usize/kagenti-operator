@@ -1,0 +1,115 @@
+{{- if .Values.aiGateway.enable }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kagenti-ai-gateway-role
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+rules:
+# Kagenti AI Gateway CRDs
+- apiGroups:
+  - aigateway.kagenti.dev
+  resources:
+  - airoutingpolicies
+  - aiaccesspolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - aigateway.kagenti.dev
+  resources:
+  - airoutingpolicies/status
+  - aiaccesspolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - aigateway.kagenti.dev
+  resources:
+  - airoutingpolicies/finalizers
+  - aiaccesspolicies/finalizers
+  verbs:
+  - update
+# Gateway API (read-only)
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+  - list
+  - watch
+# Envoy Gateway resources
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends
+  - clienttrafficpolicies
+  - backendtrafficpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# Envoy AI Gateway resources
+- apiGroups:
+  - aigateway.envoyproxy.io
+  resources:
+  - aiservicebackends
+  - aigatewayroutes
+  - backendsecuritypolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# Secrets (for CA and server certs)
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# ConfigMaps (for trust bundles, read-only)
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-ai-gateway-rolebinding
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kagenti-ai-gateway-role
+subjects:
+- kind: ServiceAccount
+  name: {{ .Values.controllerManager.serviceAccountName }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
