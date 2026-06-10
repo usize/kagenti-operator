@@ -1,0 +1,24 @@
+config:
+  envoyGateway:
+    extensionApis:
+      enableBackend: true
+    extensionManager:
+      hooks:
+        xdsTranslator:
+          post:
+          - Translation
+          - Cluster
+          - Route
+          translation:
+            cluster:
+              includeAll: true
+            listener:
+              includeAll: true
+            route:
+              includeAll: true
+            secret:
+              includeAll: true
+      service:
+        fqdn:
+          hostname: ai-gateway-controller.envoy-ai-gateway-system.svc.cluster.local
+          port: 1063
