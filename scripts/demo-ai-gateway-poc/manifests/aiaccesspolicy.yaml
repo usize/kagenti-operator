@@ -1,0 +1,17 @@
+apiVersion: aigateway.kagenti.dev/v1alpha1
+kind: AIAccessPolicy
+metadata:
+  name: ai-gateway-access
+  namespace: team1
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+
+  mtls:
+    trustDomain: localtest.me
+    trustBundleConfigMap:
+      name: spire-bundle
+      namespace: spire-system
+      key: bundle.spiffe

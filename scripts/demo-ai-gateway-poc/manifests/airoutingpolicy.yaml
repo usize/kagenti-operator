@@ -1,0 +1,23 @@
+apiVersion: aigateway.kagenti.dev/v1alpha1
+kind: AIRoutingPolicy
+metadata:
+  name: ai-gateway-routing
+  namespace: team1
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+
+  providers:
+  - name: ollama
+    endpoint: http://ollama.team1.svc:11434
+    schema: OpenAI
+
+  models:
+  - name: "qwen2.5:3b"
+    backends:
+    - provider: ollama
+      model: "qwen2.5:3b"
+    rateLimit:
+      requestsPerMinute: 5
