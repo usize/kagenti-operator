@@ -118,14 +118,15 @@ ok "Model qwen2.5:3b pulled"
 log "Phase 5: Building operator with AI Gateway support"
 OPERATOR_DIR="$REPO_ROOT/kagenti-operator"
 
-# Build using ko
+# Build using docker
 cd "$OPERATOR_DIR"
-KO_DOCKER_REPO=ko.local ko build ./cmd/... --bare --platform=linux/$(go env GOARCH) \
-  -t ai-gateway-poc > "$LOG_DIR/07-operator-build.log" 2>&1
-OPERATOR_IMAGE="ko.local/cmd:ai-gateway-poc"
+TAG="ai-gateway-poc-$(date +%s)"
+docker build . --tag "local/kagenti-operator:${TAG}" --load \
+  > "$LOG_DIR/07-operator-build.log" 2>&1
 
 # Load into Kind
-kind load docker-image "$OPERATOR_IMAGE" --name kagenti > "$LOG_DIR/08-kind-load.log" 2>&1
+kind load docker-image "local/kagenti-operator:${TAG}" --name kagenti \
+  > "$LOG_DIR/08-kind-load.log" 2>&1
 cd "$REPO_ROOT"
 ok "Operator image built and loaded"
 
@@ -133,8 +134,8 @@ ok "Operator image built and loaded"
 helm upgrade --install kagenti-operator \
   "$REPO_ROOT/charts/kagenti-operator" \
   -n "$OPERATOR_NS" \
-  --set controllerManager.container.image.repository=ko.local/cmd \
-  --set controllerManager.container.image.tag=ai-gateway-poc \
+  --set controllerManager.container.image.repository=local/kagenti-operator \
+  --set controllerManager.container.image.tag="${TAG}" \
   --set aiGateway.enable=true \
   --reuse-values \
   --wait > "$LOG_DIR/09-operator-install.log" 2>&1

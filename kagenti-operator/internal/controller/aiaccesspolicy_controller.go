@@ -47,8 +47,12 @@ const (
 // AIAccessPolicyReconciler reconciles AIAccessPolicy resources.
 type AIAccessPolicyReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	// APIReader bypasses the cache for cross-namespace ConfigMap reads.
+	// The operator's ConfigMap cache is scoped by label/namespace selectors
+	// that don't cover arbitrary trust bundle ConfigMaps.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
 }
 
 func (r *AIAccessPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -76,7 +80,12 @@ func (r *AIAccessPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		cmKey = "bundle.spiffe"
 	}
 
-	if err := r.Get(ctx, types.NamespacedName{
+	// Use APIReader to bypass the scoped ConfigMap cache.
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	if err := reader.Get(ctx, types.NamespacedName{
 		Name:      cmRef.Name,
 		Namespace: cmNamespace,
 	}, bundleCM); err != nil {

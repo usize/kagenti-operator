@@ -550,9 +550,10 @@ func main() {
 		setupLog.Info("AI Gateway routing controller enabled")
 
 		if err = (&controller.AIAccessPolicyReconciler{
-			Client:   mgr.GetClient(),
-			Scheme:   mgr.GetScheme(),
-			Recorder: mgr.GetEventRecorderFor("aiaccesspolicy-controller"),
+			Client:    mgr.GetClient(),
+			APIReader: mgr.GetAPIReader(),
+			Scheme:    mgr.GetScheme(),
+			Recorder:  mgr.GetEventRecorderFor("aiaccesspolicy-controller"),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AIAccessPolicy")
 			os.Exit(1)
